@@ -6,6 +6,7 @@ import cPickle
 import os, os.path
 import math
 from hashlib import md5
+import psycopg2
 from werkzeug.contrib.fixers import ProxyFix
 
 OLD_DATE = datetime.datetime(2018, 1, 1, 0, 0, 0)
@@ -45,14 +46,128 @@ def response(request, title, content, etag='', mime='text/html',
 hatta.response.WikiResponse = CachedWikiResponse
 hatta.response.response = response
 
+class CacheManager(object):
+    def __init__(self, wiki):
+        self.wiki = wiki
+        self._stats = {'h': 0, 'm': 0}
+        self._setup()
+    
+    def _setup(self):
+        pass
+
+    def __getitem__(self, url):
+        pass
+    
+    def __setitem__(self, url, response):
+        pass
+    
+    def __delitem__(self, url):
+        pass
+    
+    def clear(self):
+        pass
+
+class FSCacheManager(CacheManager):
+    def _setup(self):
+        self.page_cache_path = os.path.join(self.wiki.cache, 'rendered')
+        if not os.path.isdir(self.page_cache_path):
+            os.makedirs(self.page_cache_path)
+
+    def url_to_pagecache(self, url):
+        return os.path.join(self.page_cache_path, md5(url).hexdigest())
+    
+    def __getitem__(self, url):
+        path = self.url_to_pagecache(url)
+        if os.path.exists(path):
+            try:
+                with open(path) as fp:
+                    resp, exp = cPickle.load(fp)
+                if exp >= time.time():
+                    self._stats['h'] += 1
+                    return resp
+                else:
+                    resp = None
+                    os.unlink(path)
+            except OSError:
+                pass
+        self._stats['m'] += 1
+    
+    def __setitem__(self, url, val):
+        response, exp = val
+        path = self.url_to_pagecache(url)
+        try:
+            with open(path, 'wb') as fp:
+                cPickle.dump((response, exp), fp)
+        except OSError:
+            import traceback
+            traceback.print_exc()
+    
+    def __delitem__(self, url):
+        try:
+            os.unlink(self.url_to_pagecache(url))
+        except OSError:
+            pass
+            
+    def clear(self):
+        for f in os.listdir(self.page_cache_path):
+            try:
+                os.unlink(os.path.join(self.page_cache_path, f))
+            except OSError:
+                pass
+
+class DBCacheManager(CacheManager):
+    def _setup(self):
+        self.conn = self.wiki.storage.conn
+        with self.conn as conn, conn.cursor() as c:
+            print 'creating page cache table'
+            c.execute('''
+            CREATE TABLE IF NOT EXISTS pagecache (
+                url STRING PRIMARY KEY,
+                response BYTES,
+                exp FLOAT
+            )
+            ''')
+    
+    def __getitem__(self, url):
+        with self.conn as conn, conn.cursor() as c:
+            c.execute('SELECT response, exp FROM pagecache WHERE url = %s', (url,))
+            r = c.fetchone()
+            if r:
+                resp, exp = r
+                if exp >= time.time():
+                    resp = cPickle.loads(bytes(resp))
+                    self._stats['h'] += 1
+                    return resp
+                else:
+                    c.execute('DELETE FROM pagecache WHERE url = %s', (url,))
+        self._stats['m'] += 1
+
+    def __setitem__(self, url, val):
+        response, exp = val
+        with self.conn as conn, conn.cursor() as c:
+            data = cPickle.dumps(response)
+            # print data
+            c.execute('UPSERT INTO pagecache (url, response, exp) VALUES (%s, %s, %s)', (url, data, exp))
+    
+    def __delitem__(self, url):
+        with self.conn as conn, conn.cursor() as c:
+            c.execute('DELETE FROM pagecache WHERE url = %s', (url,))
+    
+    def clear(self, url):
+        with self.conn as conn, conn.cursor() as c:
+            c.execute('DELETE FROM pagecache', (url,))
+    
 
 class CachedWiki(hatta.Wiki):
     def __init__(self, config, **kwargs):
         hatta.Wiki.__init__(self, config, **kwargs)
-        self.page_cache_path = os.path.join(self.cache, 'rendered')
-        self._stats = {'h': 0, 'm': 0}
-        if not os.path.isdir(self.page_cache_path):
-            os.makedirs(self.page_cache_path)
+        cmanager = config.get('cache_manager', 'fs')
+        if cmanager == 'fs':
+            self.cache_manager = FSCacheManager(self)
+        elif cmanager == 'db':
+            self.cache_manager = DBCacheManager(self)
+        else:
+            raise Exception(cmanager)
         self._app = super(CachedWiki, self).application
 
     @werkzeug.responder
@@ -91,45 +206,24 @@ class CachedWiki(hatta.Wiki):
         except werkzeug.exceptions.HTTPException as err:
             resp = err
         return resp
-        
-    def url_to_pagecache(self, url):
-        return os.path.join(self.page_cache_path, md5(url).hexdigest())
-
+    
     def get_cached_page(self, url, environ):
-        resp = None
-        path = self.url_to_pagecache(url)
-        if os.path.exists(path):
-            try:
-                with open(path) as fp:
-                    resp, exp = cPickle.load(fp)
-                if exp >= time.time():
-                    self._stats['h'] += 1
-                else:
-                    resp = None
-                    os.unlink(path)
-            except OSError:
-                pass
+        resp = self.cache_manager[url]
         if not resp:
-            self._stats['m'] += 1
             resp = self.get_uncached_page(environ)
             if resp.status.startswith('200'):
                 # only cache complete responses
+                resp.freeze()
                 try:
-                    resp.freeze()
-                    try:
-                        del resp.headers['Date']
-                    except KeyError:
-                        pass
+                    del resp.headers['Date']
+                except KeyError:
+                    pass
 
-                    # exp = (math.sqrt(resp.content_length) * 7200)
-                    # just cache for 30 days
-                    exp = 86400 * 30
-                    exp += time.time()
-                    with open(path, 'wb') as fp:
-                        cPickle.dump((resp, exp), fp)
-                except OSError:
-                    import traceback
-                    traceback.print_exc()
+                # exp = (math.sqrt(resp.content_length) * 7200)
+                # just cache for 30 days
+                exp = 86400 * 30
+                exp += time.time()
+                self.cache_manager[url] = (resp, exp)
         resp.make_conditional(environ)
         return resp
 
@@ -138,23 +232,15 @@ class CachedWiki(hatta.Wiki):
         if resp.status.startswith('303'):
             if url == '/Menu':
                 # must clear the whole cache!
-                print list(self.cache_clear())
+                self.cache_clear()
             else:
-                try:
-                    os.unlink(self.url_to_pagecache(url))
-                except OSError:
-                    pass
+                del self.cache_manager[url]
         return resp
     
     def cache_clear(self):
         for st in self.cache_stats():
             yield st
-        for f in os.listdir(self.page_cache_path):
-            try:
-                os.unlink(os.path.join(self.page_cache_path, f))
-                yield f + '\n'
-            except OSError:
-                pass
+        self.cache_manager.clear()
     
     def cache_stats(self):
         hits, misses = self._stats['h'], self._stats['m']

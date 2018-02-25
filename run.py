@@ -6,6 +6,7 @@ config = hatta.WikiConfig(
     repo_path='postgresql://root@banzai.local:26257/wiki?application_name=cockroach&sslmode=disable',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
 )
+config.set('cache_manager', 'db')
 
 wikicache.CachedWiki.storage_class = dbstorage.WikiStorage
 wikicache.CachedWiki.index_class = dbsearch.WikiDBSearch
