@@ -1,40 +1,37 @@
+from datta.base import BaseDB
 from hatta.search import WikiSearch
 import hatta
 
 
-class WikiDBSearch(WikiSearch):
+class WikiDBSearch(BaseDB, WikiSearch):
+    CREATE_SQL = '''
+    CREATE TABLE IF NOT EXISTS titles (
+        id SERIAL PRIMARY KEY, 
+        title VARCHAR
+    );
+    CREATE TABLE IF NOT EXISTS words (
+        word VARCHAR,
+        page INTEGER,
+        count INTEGER,
+        INDEX (page),
+        INDEX (word)
+    );
+    CREATE TABLE IF NOT EXISTS links (
+        src INT, 
+        target VARCHAR, 
+        label VARCHAR, 
+        number INTEGER,
+        INDEX (src),
+        INDEX (target)
+    )
+    '''
     def __init__(self, cache_path, lang, storage):
         self._con = {}
         self.storage = storage
         self.lang = lang
         if lang == "ja":
             self.split_text = self.split_japanese_text
-        self.init_db(self.storage.conn)
-
-    @property
-    def con(self):
-        return self.storage.conn
-
-    def init_db(self, conn):
-        with conn, conn.cursor() as c:
-            c.execute('CREATE TABLE IF NOT EXISTS titles '
-                    '(id SERIAL PRIMARY KEY, title VARCHAR);')
-            c.execute('CREATE TABLE IF NOT EXISTS words '
-                    '(word VARCHAR, page INTEGER, count INTEGER);')
-            c.execute('CREATE INDEX IF NOT EXISTS index1 '
-                             'ON words (page);')
-            c.execute('CREATE INDEX IF NOT EXISTS index2 '
-                             'ON words (word);')
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS links 
-                    (src INT, 
-                    target VARCHAR, 
-                    label VARCHAR, 
-                    number INTEGER,
-                    INDEX (src),
-                    INDEX (target)
-                )
-                ''')
+        BaseDB.__init__(self, self.storage.dsn)
 
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
@@ -48,7 +45,7 @@ class WikiDBSearch(WikiSearch):
     def find(self, words):
         """Iterator of all pages containing the words, and their scores."""
 
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             ranks = []
             for word in words:
                 # Calculate popularity of each word.
@@ -123,12 +120,12 @@ class WikiDBSearch(WikiSearch):
         if text is None and data is not None:
             text = unicode(data, self.storage.charset, 'replace')
         self.set_last_revision(self.storage.repo_revision())
-        with self.con as conn, conn.cursor() as c:
+        with self.cursor() as c:
             self.reindex_page(page, title, c, text)
 
     def reindex(self, wiki, pages):
         """Updates specified pages in bulk."""
-        with self.con as conn, conn.cursor() as c:
+        with self.cursor() as c:
             for title in pages:
                 page = hatta.page.get_page(None, title, wiki)
                 self.reindex_page(page, title, c)
@@ -163,7 +160,7 @@ class WikiDBSearch(WikiSearch):
     
     def orphaned_pages(self):
         """Gives all pages with no links to them."""
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             sql = 'SELECT title FROM titles left join links on titles.title = links.target WHERE links.src IS NULL ORDER BY title'
             c.execute(sql)
             for (title,) in c:
@@ -172,7 +169,7 @@ class WikiDBSearch(WikiSearch):
     def wanted_pages(self):
         """Gives all pages that are linked to, but don't exist, together with
         the number of links."""
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             sql = '''SELECT count(*) AS c, target FROM links 
             LEFT JOIN titles ON titles.title = links.target 
             WHERE titles.title IS NULL 
@@ -184,7 +181,7 @@ class WikiDBSearch(WikiSearch):
 
     def page_backlinks(self, title):
         """Gives a list of pages linking to specified page."""
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             sql = ('SELECT DISTINCT(titles.title) '
                    'FROM links, titles '
                    'WHERE (titles.id=links.src) AND (links.target=%s) '
@@ -195,14 +192,14 @@ class WikiDBSearch(WikiSearch):
 
     def page_links(self, title):
         """Gives a list of links on specified page."""
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             sql = 'SELECT links.target FROM links, titles WHERE links.src=titles.id AND titles.title=%s ORDER BY links.number;'
             c.execute(sql, (title,))
             for (link,) in c:
                 yield unicode(link)
 
     def page_links_and_labels(self, title):
-        with self.con as con, con.cursor() as c:
+        with self.cursor() as c:
             sql = '''SELECT links.target, links.label 
                 FROM links, titles 
                 WHERE links.src=titles.id and titles.title=%s 

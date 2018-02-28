@@ -8,6 +8,7 @@ import math
 from hashlib import md5
 import psycopg2
 from werkzeug.contrib.fixers import ProxyFix
+from datta.base import BaseDB
 
 OLD_DATE = datetime.datetime(2018, 1, 1, 0, 0, 0)
 
@@ -67,6 +68,15 @@ class CacheManager(object):
     def clear(self):
         pass
 
+    def stats(self):
+        hits, misses = self._stats['h'], self._stats['m']
+        if hits or misses:
+            ratio = (float(hits) / (hits + misses)) * 100
+        else:
+            ratio = 0
+        return hits, misses, ratio
+
+
 class FSCacheManager(CacheManager):
     def _setup(self):
         self.page_cache_path = os.path.join(self.wiki.cache, 'rendered')
@@ -115,48 +125,63 @@ class FSCacheManager(CacheManager):
             except OSError:
                 pass
 
-class DBCacheManager(CacheManager):
-    def _setup(self):
-        self.conn = self.wiki.storage.conn
-        with self.conn as conn, conn.cursor() as c:
-            print 'creating page cache table'
-            c.execute('''
+
+class DBCacheManager(CacheManager, BaseDB):
+    CREATE_SQL = '''
             CREATE TABLE IF NOT EXISTS pagecache (
                 url STRING PRIMARY KEY,
                 response BYTES,
-                exp FLOAT
+                exp INT
             )
-            ''')
+            '''
+    GET_RESP_SQL = 'SELECT response, exp FROM pagecache WHERE url = %s'
+    DEL_RESP_SQL = 'DELETE FROM pagecache WHERE url = %s RETURNING NOTHING'
+    SET_RESP_SQL = 'UPSERT INTO pagecache (url, response, exp) VALUES (%s, %s, %s) RETURNING NOTHING'
+
+    def _setup(self):
+        BaseDB.__init__(self, self.wiki.storage.dsn)
+
+        self.inc_counter = self.wiki.storage.inc_counter
+        self.storage = self.wiki.storage
+
+        if not self.storage.get_counter('cache_hit'):
+            self.storage.set_counter('cache_hit', 0)
+            self.storage.set_counter('cache_miss', 0)
     
     def __getitem__(self, url):
-        with self.conn as conn, conn.cursor() as c:
-            c.execute('SELECT response, exp FROM pagecache WHERE url = %s', (url,))
+        with self.cursor() as c:
+            c.execute(self.GET_RESP_SQL, (url,))
             r = c.fetchone()
             if r:
                 resp, exp = r
                 if exp >= time.time():
                     resp = cPickle.loads(bytes(resp))
-                    self._stats['h'] += 1
+                    self.inc_counter(c, 'cache_hit')
                     return resp
                 else:
-                    c.execute('DELETE FROM pagecache WHERE url = %s', (url,))
-        self._stats['m'] += 1
+                    c.execute(self.DEL_RESP_SQL, (url,))
+            self.inc_counter(c, 'cache_miss')
 
     def __setitem__(self, url, val):
         response, exp = val
-        with self.conn as conn, conn.cursor() as c:
-            data = cPickle.dumps(response)
-            # print data
-            c.execute('UPSERT INTO pagecache (url, response, exp) VALUES (%s, %s, %s)', (url, data, exp))
+        data = cPickle.dumps(response)
+        self.execute(self.SET_RESP_SQL, (url, data, int(exp)))
     
     def __delitem__(self, url):
-        with self.conn as conn, conn.cursor() as c:
-            c.execute('DELETE FROM pagecache WHERE url = %s', (url,))
+        self.execute(self.DEL_RESP_SQL, (url,))
     
     def clear(self, url):
-        with self.conn as conn, conn.cursor() as c:
-            c.execute('DELETE FROM pagecache', (url,))
-    
+        self.execute('TRUNCATE pagecache')
+
+    def stats(self):
+        hits = self.storage.get_counter('cache_hit')
+        misses = self.storage.get_counter('cache_miss')
+        if hits or misses:
+            ratio = (float(hits) / (hits + misses)) * 100
+        else:
+            ratio = 0
+        return hits, misses, ratio
+
 
 class CachedWiki(hatta.Wiki):
     def __init__(self, config, **kwargs):
@@ -241,13 +266,8 @@ class CachedWiki(hatta.Wiki):
         for st in self.cache_stats():
             yield st
         self.cache_manager.clear()
-    
+
     def cache_stats(self):
-        hits, misses = self._stats['h'], self._stats['m']
-        if hits or misses:
-            ratio = (float(hits) / (hits + misses)) * 100
-        else:
-            ratio = 0
-        yield 'size: %d\n' % len(os.listdir(self.page_cache_path))
+        hits, misses, ratio = self.cache_manager.stats()
         yield 'hits: %d\nmisses: %d\nratio: %.1f%%\n\n' % (hits, misses, ratio)
 

@@ -16,6 +16,7 @@ import mercurial.simplemerge
 from hatta import error
 from hatta import page
 import psycopg2
+from datta.base import BaseDB
 
 
 class StorageError(Exception):
@@ -35,7 +36,7 @@ def merge_func(base, other, this):
                                   base_marker=None))
 
 
-class WikiStorage(object):
+class WikiStorage(BaseDB):
     """
     Provides means of storing wiki pages and keeping track of their
     change history, using Mercurial repository as the storage method.
@@ -62,11 +63,10 @@ class WikiStorage(object):
                 ts TIMESTAMPTZ,
                 author VARCHAR,
                 comment VARCHAR,
-                rendered TEXT,
                 INDEX (ts),
                 PRIMARY KEY (title),
                 CONSTRAINT fk_hist FOREIGN KEY (title, rev) REFERENCES {history_table} (title, rev)
-            ) INTERLEAVE IN PARENT {history_table} (title, rev);
+            );
             CREATE TABLE IF NOT EXISTS {chunk_table} (
                 title VARCHAR NOT NULL,
                 rev INT,
@@ -76,7 +76,10 @@ class WikiStorage(object):
                 CONSTRAINT fk_hist FOREIGN KEY (title, rev) REFERENCES {history_table} (title, rev)
             ) INTERLEAVE IN PARENT {history_table} (title, rev);
     '''
-    
+    CREATE_PARS = {'page_table': 'pages', 
+                  'history_table': 'history', 
+                  'chunk_table': 'chunks'}
+
     def __init__(self, path, charset=None, _=lambda x: x, unix_eol=False,
                  extension=None, repo_path=None):
         """
@@ -93,14 +96,13 @@ class WikiStorage(object):
         self.page_table = 'pages'
         self.history_table = 'history'
         self.chunk_table = 'chunks'
-        self.conn = psycopg2.connect(repo_path)
+        BaseDB.__init__(self, repo_path)
         self.repo_path = repo_path
-        self._setup()
 
-    def _setup(self):
-        tables = {'page_table': self.page_table, 'history_table': self.history_table, 'chunk_table': self.chunk_table}
-        with self.conn as conn, conn.cursor() as c:
-            c.execute(self.CREATE_SQL.format(**tables))
+    def init_db(self):
+        BaseDB.init_db(self)
+        tables = self.CREATE_PARS
+        with self.cursor() as c:
             # check the repo counter
             c.execute('SELECT v from counters WHERE k = %s', ('reporev', ))
             r = c.fetchone()
@@ -129,35 +131,31 @@ class WikiStorage(object):
         self.SAVE_CHUNK_SQL = 'INSERT INTO {chunk_table} (title, rev, chunk) VALUES (%s, %s, %s) RETURNING id'.format(**tables)
         self.GET_CHUNKS_SQL = 'SELECT id, chunk FROM {chunk_table} WHERE title = %s and rev = %s ORDER BY id'.format(**tables)
         self.DELETE_PAGE_SQL = 'DELETE FROM {page_table} WHERE title = %s'.format(**tables)
-        
+    
     def reopen(self):
         """Close and reopen the repo, to make sure we are up to date."""
         pass
 
     def __contains__(self, title):
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.CHECK_TITLE_SQL, (title,))
             return bool(c.rowcount)
 
     def __iter__(self):
         return self.all_pages()
     
-    def _increment(self, cursor, counter='reporev'):
-        cursor.execute('UPDATE counters SET v = v+1 WHERE k = %s RETURNING v', (counter,))
-        return cursor.fetchone()[0]
+    def inc_counter(self, cursor, counter='reporev'):
+        cursor.execute('UPDATE counters SET v = v+1 WHERE k = %s RETURNING NOTHING', (counter,))
 
     def get_counter(self, counter='reporev'):
-        with self.conn as conn, conn.cursor() as c:
-            c.execute('SELECT v from counters where k = %s', (counter,))
-            r = c.fetchone()
-            if r:
-                return r[0]
-            else:
-                return 0
+        count = self.execute('SELECT v from counters where k = %s', (counter,), retone=True)
+        if count:
+            return count[0]
+        else:
+            return 0
     
     def set_counter(self, counter, val):
-        with self.conn as conn, conn.cursor() as c:
-            c.execute('UPSERT INTO counters (v, k) VALUES (%s, %s)', (val, counter))
+        self.execute('UPSERT INTO counters (v, k) VALUES (%s, %s)', (val, counter))
 
     def save_data(self, title, data, author=None, comment=None, parent_rev=None, ts=None):
         """Save a new revision of the page. If the data is None, deletes it."""
@@ -176,7 +174,7 @@ class WikiStorage(object):
         #             data = self._merge(repo_file, parent, other, data)
         #         except ValueError:
         #             text = _(u'failed merge of edit conflict').encode('utf-8')
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             ts = ts or time.time()
             ts = psycopg2.TimestampFromTicks(ts)
             if len(data) > 1024*1024:
@@ -195,10 +193,10 @@ class WikiStorage(object):
                 c.execute(self.SAVE_HISTORY_SQL, (title, ts, user, text, data, title))
                 rev, ts = c.fetchone()
             c.execute(self.SAVE_PAGE_SQL, (title, rev, ts, user, text))
-            self._increment(c)
+            self.inc_counter(c)
 
     def delete_page(self, title, author, comment, ts=None):
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.CHECK_TITLE_SQL, (title,))
             if c.rowcount:            
                 # record the history
@@ -206,7 +204,7 @@ class WikiStorage(object):
                 c.execute(self.SAVE_HISTORY_SQL, (title, ts, author, comment, None, title))
                 # delete the reference
                 c.execute(self.DELETE_PAGE_SQL, (title,))
-                self._increment(c)
+                self.inc_counter(c)
             else:
                 raise error.ForbiddenErr()
 
@@ -236,12 +234,11 @@ class WikiStorage(object):
         return data
 
     def page_data(self, title):
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.GET_PAGE_SQL, (title,))
             row = c.fetchone()
-            if not row:
-                raise error.NotFoundErr()
-            else:
+            # import pdb;pdb.set_trace()
+            if row:
                 data = row[5]
                 if data is None:
                     # need to combine chunks
@@ -249,16 +246,14 @@ class WikiStorage(object):
                 else:
                     data = bytes(data)
                 return data
+        raise error.NotFoundErr()
 
     def page_meta(self, title):
         """Get page's revision, date, last editor and his edit comment."""
-        with self.conn as conn, conn.cursor() as c:
-            c.execute(self.GET_PAGE_META_SQL, (title,))
-            row = c.fetchone()
-            if not row:
-                raise error.NotFoundErr()
-            else:
-                return row
+        row = self.execute(self.GET_PAGE_META_SQL, (title,), retone=True)
+        if row:
+            return row
+        raise error.NotFoundErr()
 
     def repo_revision(self):
         """Give the latest revision of the repository."""
@@ -266,17 +261,24 @@ class WikiStorage(object):
 
     def page_history(self, title):
         """Iterate over the page's history."""
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.GET_HISTORY_SQL, (title,))
             for rev, ts, author, comment in c:
                 yield rev, ts, author, comment
 
     def page_revision(self, title, rev):
         """Get binary content of the specified revision of the page."""
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.GET_REV_SQL, (title, rev))
             row = c.fetchone()
-            if not row:
+            if row:
+                data = row[0]
+                if data is None:
+                    data = self._get_chunks(title, rev, c)
+                else:
+                    data = bytes(data)
+                return data
+            else:
                 c.execute(self.GET_LASTREV_SQL, (title, rev))
                 row = c.fetchone()
                 if row:
@@ -284,13 +286,6 @@ class WikiStorage(object):
                 else:
                     # return b''
                     raise error.NotFoundErr()
-            else:
-                data = row[0]
-                if data is None:
-                    data = self._get_chunks(title, rev, c)
-                else:
-                    data = bytes(data)
-                return data
 
     def revision_text(self, title, rev):
         """Get unicode text of the specified revision of the page."""
@@ -301,14 +296,14 @@ class WikiStorage(object):
 
     def history(self):
         """Iterate over the history of entire wiki."""
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute(self.ALL_HISTORY_SQL)
             for row in c:
                 yield row
 
     def all_pages(self):
         """Iterate over the titles of all pages in the wiki."""
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute('SELECT title from {page_table}'.format(page_table=self.page_table))
             for title in c:
                 yield title[0]
@@ -317,7 +312,7 @@ class WikiStorage(object):
         """
         Return all pages that changed since specified repository revision.
         """
-        with self.conn as conn, conn.cursor() as c:
+        with self.cursor() as c:
             c.execute('SELECT title FROM {page_table} WHERE rev > %s'.format(page_table=self.page_table), (rev,))
             for title in c:
                 yield title[0]

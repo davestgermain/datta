@@ -1,5 +1,5 @@
 import hatta
-import dbstorage, dbsearch
+from datta import dbstorage, dbsearch
 import wikicache
 
 config = hatta.WikiConfig(
@@ -8,9 +8,12 @@ config = hatta.WikiConfig(
 )
 config.set('cache_manager', 'db')
 
+# hatta.Wiki.storage_class = dbstorage.WikiStorage
+# hatta.Wiki.index_class = dbsearch.WikiDBSearch
+# wikiapp = hatta.Wiki(config).application
+
 wikicache.CachedWiki.storage_class = dbstorage.WikiStorage
 wikicache.CachedWiki.index_class = dbsearch.WikiDBSearch
-
 wikiapp = wikicache.CachedWiki(config).application
 
     
