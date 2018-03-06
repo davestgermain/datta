@@ -6,7 +6,7 @@ config = WikiConfig(
     repo_path='postgresql://root@banzai.local:26257/wiki?application_name=cockroach&sslmode=disable',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
 )
-# config.set('cache_manager', 'db')
+config.set('cache_manager', 'db')
 
 Wiki.storage_class = dbstorage.WikiStorage
 Wiki.index_class = dbsearch.WikiDBSearch

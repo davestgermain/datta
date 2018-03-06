@@ -74,8 +74,9 @@ class WikiDBSearch(BaseDB, WikiSearch):
                 for rank, word in rest:
                     sql = ('SELECT SUM(count) FROM words '
                            'WHERE page=%s AND word LIKE %s;')
-                    count = con.execute(sql,
-                        (title_id, '%%%s%%' % word)).fetchone()[0]
+                    c.execute(sql,
+                        (title_id, '%%%s%%' % word))
+                    count = c.fetchone()[0]
                     if not count:
                         # If page misses any of the words, its score is 0
                         score = 0
