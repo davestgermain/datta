@@ -1,9 +1,11 @@
 from datta.base import BaseDB
 from hatta.search import WikiSearch
 import hatta
+import threading
 
 
 class WikiDBSearch(BaseDB, WikiSearch):
+    INDEX_THREAD = None
     CREATE_SQL = '''
     CREATE TABLE IF NOT EXISTS titles (
         id SERIAL PRIMARY KEY, 
@@ -89,16 +91,15 @@ class WikiDBSearch(BaseDB, WikiSearch):
             changed = self.storage.all_pages()
         else:
             changed = self.storage.changed_since(last_rev)
-        import threading
-        if self._thread and self._thread.is_alive:
-            print 'alreading reindexing'
-        else:
-            self._thread = threading.Thread(target=self.reindex_in_thread, args=(wiki, list(changed)))
-            self._thread.daemon = True
-            self._thread.start()
-        # self.reindex(wiki, changed)
-        # rev = self.storage.repo_revision()
-        # self.set_last_revision(rev)
+        changed = list(changed)
+        if changed:
+            
+            if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
+                print 'alreading reindexing'
+            else:
+                self.INDEX_THREAD = threading.Thread(target=self.reindex_in_thread, args=(wiki, changed))
+                self.INDEX_THREAD.daemon = True
+                self.INDEX_THREAD.start()
 
     def reindex_in_thread(self, wiki, pages):
         print 'starting thread to reindex', pages

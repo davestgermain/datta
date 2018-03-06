@@ -57,19 +57,19 @@ class BaseDB(object):
     @property
     def conn(self):
         tid = get_ident()
-        conn = self._pool.getconn(tid)
+        # conn = self._pool.getconn(tid)
         
-        # try:
-        #     conn = BaseDB.CONNECTIONS[tid, self._dbname]
-        # except KeyError:
-        #     conn = BaseDB.CONNECTIONS[tid, self._dbname] = psycopg2.connect(self.dsn)
+        try:
+            conn = BaseDB.CONNECTIONS[tid, self._dbname]
+        except KeyError:
+            conn = BaseDB.CONNECTIONS[tid, self._dbname] = psycopg2.connect(self.dsn)
         return conn
     
     @contextmanager
     def cursor(self):
         cursor = conn = None
         try:
-            tid = get_ident()
+            # tid = get_ident()
             conn = self.conn
             cursor = conn.cursor()
             yield cursor
@@ -77,15 +77,16 @@ class BaseDB(object):
         except:
             if conn and not conn.closed:
                 conn.rollback()
-            self._pool.putconn(conn, key=tid)
-            conn = None
             raise
         finally:
             if cursor is not None:
                 cursor.close()
-            if conn:
-                self._pool.putconn(conn, key=tid)
-                # print 'put conn', tid
+            # if conn:
+            #     print('putting conn', tid)
+            #     try:
+            #         self._pool.putconn(conn, key=tid)
+            #     except:
+            #         import traceback;traceback.print_exc()
 
     def init_db(self):
         if self.CREATE_SQL:

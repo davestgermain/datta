@@ -43,7 +43,7 @@ class WikiStorage(BaseDB):
     """
     
     CREATE_SQL = '''
-            CREATE TABLE IF NOT EXISTS counters (
+            CREATE TABLE IF NOT EXISTS {counter_table} (
                 k STRING PRIMARY KEY,
                 v INT NOT NULL
             );
@@ -78,7 +78,8 @@ class WikiStorage(BaseDB):
     '''
     CREATE_PARS = {'page_table': 'pages', 
                   'history_table': 'history', 
-                  'chunk_table': 'chunks'}
+                  'chunk_table': 'chunks',
+                  'counter_table': 'counters'}
 
     def __init__(self, path, charset=None, _=lambda x: x, unix_eol=False,
                  extension=None, repo_path=None):
@@ -137,9 +138,7 @@ class WikiStorage(BaseDB):
         pass
 
     def __contains__(self, title):
-        with self.cursor() as c:
-            c.execute(self.CHECK_TITLE_SQL, (title,))
-            return bool(c.rowcount)
+        return bool(self.execute(self.CHECK_TITLE_SQL, (title,), retone=True))
 
     def __iter__(self):
         return self.all_pages()

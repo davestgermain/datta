@@ -186,7 +186,7 @@ class DBCacheManager(CacheManager, BaseDB):
 class CachedWiki(hatta.Wiki):
     def __init__(self, config, **kwargs):
         hatta.Wiki.__init__(self, config, **kwargs)
-        cmanager = config.get('cache_manager', 'fs')
+        cmanager = config.get('cache_manager')
         if cmanager == 'fs':
             self.cache_manager = FSCacheManager(self)
         elif cmanager == 'db':
