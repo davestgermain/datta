@@ -114,8 +114,8 @@ class WikiStorage(BaseDB):
                                 FROM {page_table} p, {history_table} h
                                 WHERE h.title = p.title AND h.rev = p.rev
                                 AND p.title = %s'''.format(**tables)
-        self.GET_PAGE_META_SQL = 'SELECT rev, ts, author, comment FROM {page_table} WHERE title = %s'.format(**tables)
-        self.GET_HISTORY_SQL = 'SELECT rev, ts, author, comment FROM {history_table} WHERE title = %s ORDER BY ts DESC'.format(**tables)
+        self.GET_PAGE_META_SQL = 'SELECT rev, ts::timestamp, author, comment FROM {page_table} WHERE title = %s'.format(**tables)
+        self.GET_HISTORY_SQL = 'SELECT rev, ts::timestamp, author, comment FROM {history_table} WHERE title = %s ORDER BY ts DESC'.format(**tables)
         self.SAVE_HISTORY_SQL = """INSERT INTO {history_table} 
                 (title, ts, author, comment, content, rev) 
                 VALUES (%s, %s, %s, %s, %s, (
@@ -147,15 +147,15 @@ class WikiStorage(BaseDB):
     def inc_counter(self, cursor, counter='reporev'):
         cursor.execute('UPDATE counters SET v = v+1 WHERE k = %s RETURNING NOTHING', (counter,))
 
-    def get_counter(self, counter='reporev'):
-        count = self.execute('SELECT v from counters where k = %s', (counter,), retone=True)
+    def get_counter(self, counter='reporev', cursor=None):
+        count = self.execute('SELECT v from counters where k = %s', (counter,), retone=True, cursor=cursor)
         if count:
             return count[0]
         else:
             return 0
     
-    def set_counter(self, counter, val):
-        self.execute('UPSERT INTO counters (v, k) VALUES (%s, %s)', (val, counter))
+    def set_counter(self, counter, val, cursor=None):
+        self.execute('UPSERT INTO counters (v, k) VALUES (%s, %s)', (val, counter), cursor=cursor)
 
     def save_data(self, title, data, author=None, comment=None, parent_rev=None, ts=None):
         """Save a new revision of the page. If the data is None, deletes it."""
@@ -255,9 +255,9 @@ class WikiStorage(BaseDB):
             return row
         raise error.NotFoundErr()
 
-    def repo_revision(self):
+    def repo_revision(self, cursor=None):
         """Give the latest revision of the repository."""
-        return self.get_counter('reporev')
+        return self.get_counter('reporev', cursor=cursor)
 
     def page_history(self, title):
         """Iterate over the page's history."""

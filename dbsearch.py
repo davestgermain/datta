@@ -26,20 +26,20 @@ class WikiDBSearch(BaseDB, WikiSearch):
     )
     '''
     def __init__(self, cache_path, lang, storage):
-        self._con = {}
         self.storage = storage
         self.lang = lang
         if lang == "ja":
             self.split_text = self.split_japanese_text
         BaseDB.__init__(self, self.storage.dsn)
+        self._thread = None
 
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
         return self.storage.get_counter('searchrev') or -1
 
-    def set_last_revision(self, rev):
+    def set_last_revision(self, rev, cursor=None):
         """Store the last indexed repository revision."""
-        self.storage.set_counter('searchrev', rev)
+        self.storage.set_counter('searchrev', rev, cursor=cursor)
 
 
     def find(self, words):
@@ -89,10 +89,40 @@ class WikiDBSearch(BaseDB, WikiSearch):
             changed = self.storage.all_pages()
         else:
             changed = self.storage.changed_since(last_rev)
-        self.reindex(wiki, changed)
-        rev = self.storage.repo_revision()
-        self.set_last_revision(rev)
+        import threading
+        if self._thread and self._thread.is_alive:
+            print 'alreading reindexing'
+        else:
+            self._thread = threading.Thread(target=self.reindex_in_thread, args=(wiki, list(changed)))
+            self._thread.daemon = True
+            self._thread.start()
+        # self.reindex(wiki, changed)
+        # rev = self.storage.repo_revision()
+        # self.set_last_revision(rev)
 
+    def reindex_in_thread(self, wiki, pages):
+        print 'starting thread to reindex', pages
+        with self.cursor() as c:
+            for title in pages:
+                print '\tgetting', title
+                page = hatta.page.get_page(None, title, wiki)
+                print '\tindexing', title
+                self.reindex_page(page, title, c)
+                c.connection.commit()
+                print '\tindexed', title
+            self.empty = False
+            rev = self.storage.repo_revision(cursor=c)
+            self.set_last_revision(rev, cursor=c)
+        
+    def reindex(self, wiki, pages):
+        """Updates specified pages in bulk."""
+        with self.cursor() as c:
+            for title in pages:
+                page = hatta.page.get_page(None, title, wiki)
+                self.reindex_page(page, title, c)
+                print('indexed', title)
+            self.empty = False
+            
     def reindex_page(self, page, title, cursor, text=None):
         """Updates the content of the database, needs locks around."""
 
@@ -123,14 +153,6 @@ class WikiDBSearch(BaseDB, WikiSearch):
         with self.cursor() as c:
             self.reindex_page(page, title, c, text)
 
-    def reindex(self, wiki, pages):
-        """Updates specified pages in bulk."""
-        with self.cursor() as c:
-            for title in pages:
-                page = hatta.page.get_page(None, title, wiki)
-                self.reindex_page(page, title, c)
-            self.empty = False
-
     def title_id(self, title, cursor):
         r = cursor.execute('SELECT id FROM titles WHERE title = %s', (title,))
         idents = cursor.fetchone()
@@ -140,6 +162,7 @@ class WikiDBSearch(BaseDB, WikiSearch):
         return idents[0]
         
     def update_words(self, title, text, cursor):
+        print '\tupdating words', title
         title_id = self.title_id(title, cursor)
         cursor.execute('DELETE FROM words WHERE page = %s', (title_id,))
         if not text:
@@ -148,15 +171,23 @@ class WikiDBSearch(BaseDB, WikiSearch):
         title_words = self.count_words(self.split_text(title))
         for word, count in title_words.iteritems():
             words[word] = words.get(word, 0) + count
-        vals = ((word, title_id, count) for word, count in words.iteritems())
-        cursor.executemany('INSERT INTO words VALUES (%s, %s, %s)', vals)
+        chunk = []
+        chunksize = 100
+        for word, count in words.iteritems():
+            chunk.append((word, title_id, count))
+            if len(chunk) == chunksize:
+                cursor.executemany('INSERT INTO words VALUES (%s, %s, %s)', chunk)
+                chunk = []
+        print '\tupdated words',title
 
     def update_links(self, title, links_and_labels, cursor):
+        print '\tupdating links', title
         title_id = self.title_id(title, cursor)
         cursor.execute('DELETE FROM links WHERE src = %s', (title_id,))
         for number, (link, label) in enumerate(links_and_labels):
             cursor.execute('INSERT INTO links VALUES (%s, %s, %s, %s)',
                              (title_id, link, label, number))
+        print '\tupdated links', title
     
     def orphaned_pages(self):
         """Gives all pages with no links to them."""

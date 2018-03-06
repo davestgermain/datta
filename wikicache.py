@@ -192,25 +192,26 @@ class CachedWiki(hatta.Wiki):
         elif cmanager == 'db':
             self.cache_manager = DBCacheManager(self)
         else:
-            raise Exception(cmanager)
+            self.cache_manager = None
         self._app = super(CachedWiki, self).application
 
     @werkzeug.responder
     def application(self, environ, start_response):
         do_cache = False
         purge_cache = False
-        method = environ['REQUEST_METHOD']
-        path = environ['PATH_INFO']
-        if method in ('GET', 'HEAD') and not path.startswith('/+'):
-            if not environ['QUERY_STRING']:
-                do_cache = path
-        elif method == 'POST' and path.startswith(('/+edit/', '/+undo/')):
-            purge_cache = path[6:]
-        elif path.startswith('/+cache/'):
-            op = path.split('/')[2]
-            info = getattr(self, 'cache_' + op)()
-            resp = CachedWikiResponse(response=info, status=200)
-            return resp
+        if self.cache_manager:
+            method = environ['REQUEST_METHOD']
+            path = environ['PATH_INFO']
+            if method in ('GET', 'HEAD') and not path.startswith('/+'):
+                if not environ['QUERY_STRING']:
+                    do_cache = path
+            elif method == 'POST' and path.startswith(('/+edit/', '/+undo/')):
+                purge_cache = path[6:]
+            elif path.startswith('/+cache/'):
+                op = path.split('/')[2]
+                info = getattr(self, 'cache_' + op)()
+                resp = CachedWikiResponse(response=info, status=200)
+                return resp
 
         if do_cache:
             resp = self.get_cached_page(do_cache, environ)

@@ -1,0 +1,7 @@
+syntax: glob
+__pycache__/*
+*.pyc
+.DS_Store
+.coverage
+htmlcov/*
+pgshelve.egg-info
