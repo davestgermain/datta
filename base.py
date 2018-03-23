@@ -50,7 +50,7 @@ class BaseDB(object):
     def __init__(self, dsn):
         parsed = psycopg2.extensions.parse_dsn(dsn)
         self.dsn = dsn
-        self._pool = ContextConnectionPool(1, 4, self.dsn)
+        # self._pool = ContextConnectionPool(1, 4, self.dsn)
         self._dbname = parsed['dbname']
         self.init_db()
     
@@ -104,4 +104,10 @@ class BaseDB(object):
                 if retone:
                     r = cursor.fetchone()
                     return r
+
+    def iterate(self, sql, pars=None):
+        with self.cursor() as cursor:
+            cursor.execute(sql, pars)
+            for row in cursor:
+                yield row
 

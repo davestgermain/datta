@@ -10,8 +10,6 @@ import io
 # Note: we have to set these before importing Mercurial
 os.environ['HGENCODING'] = 'utf-8'
 
-import mercurial.util
-import mercurial.simplemerge
 
 from hatta import error
 from hatta import page
@@ -25,6 +23,8 @@ class StorageError(Exception):
 
 def merge_func(base, other, this):
     """Used for merging edit conflicts."""
+    import mercurial.util
+    import mercurial.simplemerge
 
     if (mercurial.util.binary(this) or mercurial.util.binary(base) or
         mercurial.util.binary(other)):
@@ -290,7 +290,10 @@ class WikiStorage(BaseDB):
         """Get unicode text of the specified revision of the page."""
 
         data = self.page_revision(title, rev)
-        text = unicode(data, self.charset, 'replace')
+        try:
+            text = unicode(data, self.charset)
+        except UnicodeDecodeError:
+            text = self._('Unable to display')
         return text
 
     def history(self):

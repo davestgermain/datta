@@ -43,7 +43,6 @@ class WikiDBSearch(BaseDB, WikiSearch):
         """Store the last indexed repository revision."""
         self.storage.set_counter('searchrev', rev, cursor=cursor)
 
-
     def find(self, words):
         """Iterator of all pages containing the words, and their scores."""
 
@@ -94,37 +93,24 @@ class WikiDBSearch(BaseDB, WikiSearch):
             changed = self.storage.changed_since(last_rev)
         changed = list(changed)
         if changed:
-            
             if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
                 print 'alreading reindexing'
             else:
-                self.INDEX_THREAD = threading.Thread(target=self.reindex_in_thread, args=(wiki, changed))
+                self.INDEX_THREAD = threading.Thread(target=self.reindex, args=(wiki, changed))
                 self.INDEX_THREAD.daemon = True
                 self.INDEX_THREAD.start()
 
-    def reindex_in_thread(self, wiki, pages):
-        print 'starting thread to reindex', pages
+    def reindex(self, wiki, pages):
         with self.cursor() as c:
             for title in pages:
-                print '\tgetting', title
                 page = hatta.page.get_page(None, title, wiki)
-                print '\tindexing', title
                 self.reindex_page(page, title, c)
                 c.connection.commit()
-                print '\tindexed', title
             self.empty = False
             rev = self.storage.repo_revision(cursor=c)
             self.set_last_revision(rev, cursor=c)
-        
-    def reindex(self, wiki, pages):
-        """Updates specified pages in bulk."""
-        with self.cursor() as c:
-            for title in pages:
-                page = hatta.page.get_page(None, title, wiki)
-                self.reindex_page(page, title, c)
-                print('indexed', title)
-            self.empty = False
-            
+        self.INDEX_THREAD = None
+
     def reindex_page(self, page, title, cursor, text=None):
         """Updates the content of the database, needs locks around."""
 
@@ -162,9 +148,8 @@ class WikiDBSearch(BaseDB, WikiSearch):
             cursor.execute('INSERT INTO titles (title) VALUES (%s) RETURNING id', (title,))
             idents = cursor.fetchone()
         return idents[0]
-        
+
     def update_words(self, title, text, cursor):
-        print '\tupdating words', title
         title_id = self.title_id(title, cursor)
         cursor.execute('DELETE FROM words WHERE page = %s', (title_id,))
         if not text:
@@ -180,17 +165,14 @@ class WikiDBSearch(BaseDB, WikiSearch):
             if len(chunk) == chunksize:
                 cursor.executemany('INSERT INTO words VALUES (%s, %s, %s)', chunk)
                 chunk = []
-        print '\tupdated words',title
 
     def update_links(self, title, links_and_labels, cursor):
-        print '\tupdating links', title
         title_id = self.title_id(title, cursor)
         cursor.execute('DELETE FROM links WHERE src = %s', (title_id,))
         for number, (link, label) in enumerate(links_and_labels):
             cursor.execute('INSERT INTO links VALUES (%s, %s, %s, %s)',
                              (title_id, link, label, number))
-        print '\tupdated links', title
-    
+
     def orphaned_pages(self):
         """Gives all pages with no links to them."""
         with self.cursor() as c:
