@@ -8,7 +8,7 @@ import time
 
 
 mstore = hatta.storage.WikiStorage(sys.argv[1])
-dbstore = dbstorage.WikiStorage('', repo_path='postgresql://root@banzai.local:26257/wiki?application_name=cockroach&sslmode=disable')
+dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='cockroachdb://root@banzai.local:26257/wiki?application_name=cockroach&sslmode=disable')
 
 history = list(mstore.history())
 history.reverse()
@@ -24,7 +24,7 @@ for title, rev, dt, author, comment in history:
 
 wiki = wikicache.CachedWiki(hatta.WikiConfig())
 wiki.storage = dbstore
-wiki.index = dbsearch.WikiDBSearch('', 'en', dbstore)
+# wiki.index = dbsearch.WikiDBSearch('', 'en', dbstore)
 wiki.index.update(wiki)
 
 

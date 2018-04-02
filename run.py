@@ -3,7 +3,7 @@ from datta import dbstorage, dbsearch
 # import hatta import Wiki, WikiConfig
 
 config = WikiConfig(
-    repo_path='cockroachdb://root@localhost:26257/wikinew?application_name=cockroach&sslmode=disable',
+    repo_path='cockroachdb://root@localhost:26257/wiki?application_name=cockroach&sslmode=disable',
     pages_path='/false-dilemma',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
 )

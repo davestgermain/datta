@@ -57,10 +57,11 @@ perms = sa.Table('fs_perms', meta,
 )
 
 
+NEXTREV = sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1])
+
 class VersionedFile(io.BufferedIOBase):
     created = None
     modified = None
-    version = None
 
     def __init__(self, path, conn=None, mode='r', transaction=None, meta=None, **kwargs):
         io.BufferedIOBase.__init__(self)
@@ -71,26 +72,55 @@ class VersionedFile(io.BufferedIOBase):
         self._buf = bytearray()
         self.meta = meta or {}
         self._chunks = None
+        self._version = None
         self.update(kwargs)
         if mode == 'w':
             self.sha256 = hashlib.sha256()
             self._length = 0
 
+    @property
+    def _hist_data(self):
+        d = {
+            'path': self.path,
+            'rev': NEXTREV.where(history.c.path==self.path)
+        }
+        if self.created:
+            d['created'] = self.created
+        content_type = getattr(self, 'content_type', None)
+        if not content_type:
+            content_type = mimetypes.guess_type(self.path)[0]
+        d['content_type'] = content_type
+        return d
+
+    @property
+    def version(self):
+        if self.mode == 'w':
+            if not self._version:
+                # trigger an insert
+                result = self._conn.execute(history.insert(self._hist_data))
+                self._version = result.inserted_primary_key[0]
+        return self._version
+    
+    @version.setter
+    def version(self, v):
+        self._version = v
+
     def close(self):
-        if self.writable() and self.version:
+        if self.writable():
             data = bytes(self._buf) or None
-            content_type = getattr(self, 'content_type', None)
-            if not content_type:
-                content_type = mimetypes.guess_type(self.path)[0]
             self.meta['length'] = self._length
             self.meta['sha256'] = self.sha256.hexdigest()
             hist_data = {
                 'data': data,
                 'meta': self.meta,
-                'content_type': content_type,
                 'owner': getattr(self, 'owner', None)
             }
-            self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
+            # try to insert into history
+            if not self._version:
+                hist_data.update(self._hist_data)
+                self.version = self._conn.execute(history.insert(hist_data)).inserted_primary_key[0]
+            else:
+                self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
             upd = insert(active).values(path=self.path, created=sa.func.now(), modified=sa.func.now(), version=self.version).on_conflict_do_update(constraint=active.primary_key, set_={'version': self.version, 'modified': sa.func.now()})
             self._conn.execute(upd)
             self._transaction.commit()
@@ -169,8 +199,6 @@ class VersionedFile(io.BufferedIOBase):
 
 
 class FSManager:
-    nextrev = sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1])
-
     def __init__(self, dsn, debug=False):
         self.dsn = dsn
         self.engine = sa.create_engine(dsn, echo=debug, json_deserializer=lambda x: x)
@@ -235,7 +263,7 @@ class FSManager:
         with self.engine.begin() as conn:
             # record the history of deletion
             hist_inst = history.insert({'path': path, 
-                                        'rev': self.nextrev.where(history.c.path==path),
+                                        'rev': NEXTREV.where(history.c.path==path),
                                         'owner': owner,
                                         'meta': {'comment': 'deleted'}
                                        })
@@ -263,13 +291,18 @@ class FSManager:
         return list(result)
 
     def set_perm(self, path, owner, perm='r'):
-        values = {
-            'path': path,
-            'owner': owner,
-            'perm': perm
-        }
-        # sql = insert(perms).values(**values).on_conflict_do_update(constraint=perms.primary_key, set_=values)
-        sql = insert(perms).values(**values).on_conflict_do_nothing(constraint=perms.primary_key)
+        sql = insert(perms)
+        if isinstance(perm, list):
+            sql = sql.values([{'path': path, 'owner': owner, 'perm': p} for p in perm])
+        else:
+            values = {
+                'path': path,
+                'owner': owner,
+                'perm': perm
+            }
+            sql = sql.values(path=path, owner=owner, perm=perm)
+        # sql = sql.on_conflict_do_update(constraint=perms.primary_key, set_=values)
+        sql = sql.on_conflict_do_nothing(constraint=perms.primary_key)
         result = self.engine.execute(sql)
 
 
@@ -322,14 +355,18 @@ class FSManager:
         elif mode == 'w':
             if not self.check_perm(path, owner=owner, perm=mode, conn=connection):
                 raise PermissionError(path)
-            trans = connection.begin()
-            hist_inst = history.insert({'path': path, 
-                                        'rev': self.nextrev.where(history.c.path==path)
-                                       })
-            result = connection.execute(hist_inst)
-            vf.version = result.inserted_primary_key[0]
-            vf._transaction = trans
+            vf._transaction = connection.begin()
         return vf
+
+
+MANAGERS = {}
+
+def get_manager(dsn, debug=False):
+    if dsn not in MANAGERS:
+        MANAGERS[dsn] = FSManager(dsn, debug=debug)
+    return MANAGERS[dsn]
+
+
 
 if __name__ == '__main__':
     fs = FSManager('cockroachdb://root@localhost:26257/test?application_name=cockroach&sslmode=disable', debug=True)

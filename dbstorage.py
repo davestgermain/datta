@@ -12,7 +12,7 @@ os.environ['HGENCODING'] = 'utf-8'
 
 from hatta import error
 from hatta import page
-from datta.fs import FSManager, FileNotFoundError, unicode
+from datta.fs import get_manager, FileNotFoundError, unicode
 
 
 class StorageError(Exception):
@@ -50,12 +50,10 @@ class WikiStorage(object):
         self.charset = charset or 'utf-8'
         self.unix_eol = unix_eol
         self.extension = extension
-        self.fs = FSManager(repo_path, debug=False)
+        self.fs = get_manager(repo_path, debug=False)
         self._wiki = path.split('/')[-1]
         self._root = self._path() + '/'
-        self.fs.set_perm(self._root, owner='*', perm='r')
-        self.fs.set_perm(self._root, owner='*', perm='w')
-        self.fs.set_perm(self._root, owner='*', perm='d')
+        self.fs.set_perm(self._root, owner='*', perm=['r', 'w', 'd'])
         self.repo_path = repo_path
 
     def reopen(self):
@@ -98,6 +96,8 @@ class WikiStorage(object):
             fp.meta['comment'] = text
             if parent_rev:
                 fp.meta['parent'] = parent_rev
+            if ts:
+                fp.created = ts
             fp.write(data)
 
     def delete_page(self, title, author, comment, ts=None):
@@ -166,14 +166,14 @@ class WikiStorage(object):
 
     def all_pages(self):
         """Iterate over the titles of all pages in the wiki."""
-        for info in self.fs.listdir(self._path('/'), walk=True):
+        for info in self.fs.listdir(self._root, walk=True):
             yield info[0].replace(self._root, '', 1)
 
     def changed_since(self, rev):
         """
         Return all pages that changed since specified repository revision.
         """
-        for title in self.fs.changes(since=rev, prefix=self._wiki):
-            yield title
+        for title in self.fs.changes(since=rev, prefix=self._root):
+            yield title.replace(self._root, '', 1)
 
 
