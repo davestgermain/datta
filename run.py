@@ -3,13 +3,14 @@ from datta import dbstorage, dbsearch
 # import hatta import Wiki, WikiConfig
 
 config = WikiConfig(
-    repo_path='postgresql://root@banzai.local:26257/wiki?application_name=cockroach&sslmode=disable',
+    repo_path='cockroachdb://root@localhost:26257/wikinew?application_name=cockroach&sslmode=disable',
+    pages_path='/false-dilemma',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
 )
-config.set('cache_manager', 'db')
+# config.set('cache_manager', 'db')
 
 Wiki.storage_class = dbstorage.WikiStorage
-Wiki.index_class = dbsearch.WikiDBSearch
+# Wiki.index_class = dbsearch.WikiDBSearch
 wikiapp = Wiki(config).application
 
 # wikicache.CachedWiki.storage_class = dbstorage.WikiStorage

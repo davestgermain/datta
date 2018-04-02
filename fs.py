@@ -3,6 +3,21 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB, insert
 import io
 import hashlib
 import os.path
+import mimetypes
+
+
+try:
+    PermissionError
+except NameError:
+    class PermissionError(IOError):
+        pass
+    class FileNotFoundError(IOError):
+        pass
+
+try:
+    unicode = unicode
+except NameError:
+    unicode = str
 
 
 CHUNKSIZE = 1024*1024
@@ -12,7 +27,7 @@ history = sa.Table('fs_history', meta,
         sa.Column('id', UUID, primary_key=True, server_default=sa.text('gen_random_uuid()')),
         sa.Column('path', sa.String, nullable=False),
         sa.Column('rev', sa.Integer, default=0, nullable=False),
-        sa.Column('created', sa.TIMESTAMP(timezone=True), default=sa.func.now()),
+        sa.Column('created', sa.TIMESTAMP(timezone=True), default=sa.func.now(), index=True),
         sa.Column('content_type', sa.String),
         sa.Column('owner', sa.String),
         sa.Column('meta', JSONB),
@@ -48,6 +63,7 @@ class VersionedFile(io.BufferedIOBase):
     version = None
 
     def __init__(self, path, conn=None, mode='r', transaction=None, meta=None, **kwargs):
+        io.BufferedIOBase.__init__(self)
         self.path = self.name = path
         self.mode = mode
         self._conn = conn
@@ -63,12 +79,15 @@ class VersionedFile(io.BufferedIOBase):
     def close(self):
         if self.writable() and self.version:
             data = bytes(self._buf) or None
+            content_type = getattr(self, 'content_type', None)
+            if not content_type:
+                content_type = mimetypes.guess_type(self.path)[0]
             self.meta['length'] = self._length
             self.meta['sha256'] = self.sha256.hexdigest()
             hist_data = {
                 'data': data,
                 'meta': self.meta,
-                'content_type': getattr(self, 'content_type', None),
+                'content_type': content_type,
                 'owner': getattr(self, 'owner', None)
             }
             self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
@@ -95,12 +114,13 @@ class VersionedFile(io.BufferedIOBase):
         d = None
         if size == -1:
             d = self.readall()
-        if size:
+        elif size:
             if self.data is not None:
                 d, self.data = self.data[:size], self.data[size:]
             elif not self._buf:
                 self.readinto(self._buf)
-            d, self._buf = self._buf[:size], self._buf[size:]
+                d, self._buf = self._buf[:size], self._buf[size:]
+                d = bytes(d)
         return d
     
     def readall(self):
@@ -133,7 +153,7 @@ class VersionedFile(io.BufferedIOBase):
             return
         if not self.writable():
             raise FileError()
-        if isinstance(data, str):
+        if isinstance(data, unicode):
             data = data.encode('utf8')
         self._buf += data
         self.sha256.update(data)
@@ -149,36 +169,46 @@ class VersionedFile(io.BufferedIOBase):
 
 
 class FSManager:
-    def __init__(self, dsn):
+    nextrev = sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1])
+
+    def __init__(self, dsn, debug=False):
         self.dsn = dsn
-        self.engine = sa.create_engine(dsn, echo=True, json_deserializer=lambda x: x)
+        self.engine = sa.create_engine(dsn, echo=debug, json_deserializer=lambda x: x)
         self.setup()
 
     def setup(self):
         meta.create_all(self.engine)
 
     def get_meta_history(self, path):
-        sql = sa.select([history.c.id, history.c.rev, history.c.created, history.c.owner, history.c.meta]).where(history.c.path == path).order_by(sa.desc(history.c.rev))
+        sql = sa.select([history.c.path, history.c.id, history.c.rev, history.c.created, history.c.owner, history.c.meta]).order_by(sa.desc(history.c.created))
+        if path.endswith('/'):
+            sql = sql.where(history.c.path.like(path + '%'))
+            do_dir = False
+        else:
+            sql = sql.where(history.c.path == path)
+            do_dir = path.count('/')
         for row in self.engine.execute(sql):
+            if do_dir and row.path.count('/') > do_dir:
+                break
             yield row
 
     def __contains__(self, path):
-        return bool(self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).fetchone()[0])
+        result = self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).fetchone()
+        return bool(result)
 
-    def listdir(self, dirname):
+    def listdir(self, dirname, walk=False):
         dirname = os.path.normpath(dirname)
         if not dirname.endswith('/'):
             dirname += '/'
         sql = sa.select([active]).where(active.c.path.like('{}%'.format(dirname))).order_by(sa.asc(active.c.path))
         numslashes = dirname.count('/')
         for row in self.engine.execute(sql):
-            if row.path.count('/') > numslashes:
+            if not walk and row.path.count('/') > numslashes:
                 continue
             yield row.path, row.created, row.modified, row.version
     
     def copyfile(self, filename_or_fileobj, topath, content_type=None):
-        import mimetypes
-        if isinstance(filename_or_fileobj, str):
+        if isinstance(filename_or_fileobj, unicode):
             filename_or_fileobj = open(filename_or_fileobj, 'rb')
         if not content_type and hasattr(filename_or_fileobj, 'name'):
             content_type = mimetypes.guess_type(filename_or_fileobj.name)[0]
@@ -196,14 +226,25 @@ class FSManager:
         return tofile
 
     def delete(self, path, owner='*'):
+        """
+        delete a file
+        """
         path = os.path.normpath(path)
         if not self.check_perm(path, owner=owner, perm='d'):
             raise PermissionError(path)
-        sql = active.delete().where(active.c.path == path)
-        result = self.engine.execute(sql)
-        return bool(result)
+        with self.engine.begin() as conn:
+            # record the history of deletion
+            hist_inst = history.insert({'path': path, 
+                                        'rev': self.nextrev.where(history.c.path==path),
+                                        'owner': owner,
+                                        'meta': {'comment': 'deleted'}
+                                       })
+            conn.execute(hist_inst)
+            sql = active.delete().where(active.c.path == path)
+            result = conn.execute(sql)
+            return bool(result)
 
-    def check_perm(self, path, owner='*', perm='r'):
+    def check_perm(self, path, owner='*', perm='r', conn=None):
         path = os.path.normpath(path)
         dirs = [path]
         sp = path.split('/')[:-1]
@@ -218,7 +259,7 @@ class FSManager:
         else:
             sql = sql.where(perms.c.owner == owner)
         sql = sql.order_by(sa.desc(perms.c.path))
-        result = self.engine.execute(sql)
+        result = (conn or self.engine).execute(sql)
         return list(result)
 
     def set_perm(self, path, owner, perm='r'):
@@ -235,11 +276,21 @@ class FSManager:
     def clear_perm(self, path, owner, perm):
         return self.engine.execute(perms.delete().where(path == path).where(owner == owner).where(perm == perm))
 
+    def maxrev(self, prefix='/'):
+        """
+        return maximum revision for fs, starting at prefix
+        """
+        sql = sa.select([sa.func.max(history.c.rev)]).where(history.c.path.like(prefix + '%'))
+        result = self.engine.execute(sql).fetchone()[0] or 0
+        return result
+
+    def changes(self, prefix='/', since=0):
+        sql = sa.select([history.c.path]).where(history.c.path.like(prefix + '%')).where(history.c.rev > since).order_by(sa.desc(history.c.created))
+        for row in self.engine.execute(sql):
+            yield row[0]
+
     def open(self, path, mode='r', rev=None, version=None, owner='*'):
         path = os.path.normpath(path)
-
-        if not self.check_perm(path, owner=owner, perm=mode):
-            raise PermissionError(path)
 
         connection = self.engine.connect()
         vf = VersionedFile(path, mode=mode, conn=connection)
@@ -248,11 +299,13 @@ class FSManager:
                     history.c.rev,
                     history.c.data,
                     history.c.content_type,
+                    history.c.owner,
                     history.c.meta]
             if not (version or rev):
                 cols.extend([
                     active.c.created,
-                    active.c.modified])
+                    active.c.modified,
+                    active.c.version])
             sql = sa.select(cols)
             if version:
                 sql = sql.where(history.c.id == version)
@@ -260,15 +313,18 @@ class FSManager:
                 sql = sql.where(history.c.rev == rev)
             else:
                 sql = sql.where(active.c.path == path).where(active.c.version == history.c.id)
-            result = connection.execute(sql)
+            result = connection.execute(sql).fetchone()
             if not result:
                 raise FileNotFoundError(path)
-            info = result.fetchone()
-            vf.update(info)
+            elif not self.check_perm(path, owner=owner, perm=mode, conn=connection):
+                raise PermissionError(path)  
+            vf.update(result)
         elif mode == 'w':
+            if not self.check_perm(path, owner=owner, perm=mode, conn=connection):
+                raise PermissionError(path)
             trans = connection.begin()
             hist_inst = history.insert({'path': path, 
-                                        'rev': sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1]).where(history.c.path==path)
+                                        'rev': self.nextrev.where(history.c.path==path)
                                        })
             result = connection.execute(hist_inst)
             vf.version = result.inserted_primary_key[0]
@@ -276,7 +332,7 @@ class FSManager:
         return vf
 
 if __name__ == '__main__':
-    fs = FSManager('cockroachdb://root@localhost:26257/test?application_name=cockroach&sslmode=disable')
+    fs = FSManager('cockroachdb://root@localhost:26257/test?application_name=cockroach&sslmode=disable', debug=True)
     
     vf = fs.open('/test.jpg', mode='r')
     hr = hashlib.md5()
@@ -286,4 +342,4 @@ if __name__ == '__main__':
             break
         hr.update(data)
     print(hr.hexdigest())
-    print(vf.__dict__)
+    # print(vf.__dict__)
