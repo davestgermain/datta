@@ -11,12 +11,12 @@ meta = sa.MetaData()
 history = sa.Table('fs_history', meta,
         sa.Column('id', UUID, primary_key=True, server_default=sa.text('gen_random_uuid()')),
         sa.Column('path', sa.String, nullable=False),
-        sa.Column('created', sa.TIMESTAMP(timezone=True), default=sa.func.now()),
         sa.Column('rev', sa.Integer, default=0, nullable=False),
-        sa.Column('data', sa.Binary),
+        sa.Column('created', sa.TIMESTAMP(timezone=True), default=sa.func.now()),
         sa.Column('content_type', sa.String),
         sa.Column('owner', sa.String),
         sa.Column('meta', JSONB),
+        sa.Column('data', sa.Binary),
         sa.UniqueConstraint('path', 'rev'),
         sa.Index('meta_idx', 'meta', postgresql_using="gin")
 )
@@ -34,6 +34,12 @@ chunks = sa.Table('fs_chunks', meta,
         sa.Column('data', sa.Binary),
 )
 
+perms = sa.Table('fs_perms', meta,
+        sa.Column('path', sa.String, nullable=False),
+        sa.Column('owner', sa.String, nullable=False),
+        sa.Column('perm', sa.String, nullable=False, default='r'),
+        sa.PrimaryKeyConstraint('path', 'owner', 'perm')
+)
 
 
 class VersionedFile(io.BufferedIOBase):
@@ -41,11 +47,11 @@ class VersionedFile(io.BufferedIOBase):
     modified = None
     version = None
 
-    def __init__(self, path, engine=None, mode='r', transaction=None, meta=None, **kwargs):
-        self.path = path
+    def __init__(self, path, conn=None, mode='r', transaction=None, meta=None, **kwargs):
+        self.path = self.name = path
         self.mode = mode
-        self.engine = engine
-        self.transaction = transaction
+        self._conn = conn
+        self._transaction = transaction
         self._buf = bytearray()
         self.meta = meta or {}
         self._chunks = None
@@ -56,17 +62,24 @@ class VersionedFile(io.BufferedIOBase):
 
     def close(self):
         if self.writable() and self.version:
-            self.mode = None
             data = bytes(self._buf) or None
             self.meta['length'] = self._length
             self.meta['sha256'] = self.sha256.hexdigest()
-            self.engine.execute(history.update().where(history.c.id == self.version).values({'data': data, 'meta': self.meta}))
+            hist_data = {
+                'data': data,
+                'meta': self.meta,
+                'content_type': getattr(self, 'content_type', None),
+                'owner': getattr(self, 'owner', None)
+            }
+            self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
             upd = insert(active).values(path=self.path, created=sa.func.now(), modified=sa.func.now(), version=self.version).on_conflict_do_update(constraint=active.primary_key, set_={'version': self.version, 'modified': sa.func.now()})
-            self.engine.execute(upd)
-            self.transaction.commit()
+            self._conn.execute(upd)
+            self._transaction.commit()
+            self._conn.close()
+        self.mode = None
     
     def get_chunks(self):
-        result = self.engine.execute(sa.select([chunks.c.data], order_by=chunks.c.id).where(chunks.c.version==self.version))
+        result = self._conn.execute(sa.select([chunks.c.data], order_by=chunks.c.id).where(chunks.c.version==self.version))
         for r in result:
             yield r[0]
 
@@ -125,62 +138,147 @@ class VersionedFile(io.BufferedIOBase):
         self._buf += data
         self.sha256.update(data)
         self._length += len(data)
-        if self._length >= CHUNKSIZE:
+        if len(self._buf) >= CHUNKSIZE:
             while self._buf:
                 chunk, self._buf = self._buf[:CHUNKSIZE], self._buf[CHUNKSIZE:]
-                self.engine.execute(chunks.insert({'version': self.version, 'data': chunk}))
+                self._conn.execute(chunks.insert({'version': self.version, 'data': chunk}))
 
     def update(self, kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
 
-def setup(engine):
-    meta.create_all(engine)
+class FSManager:
+    def __init__(self, dsn):
+        self.dsn = dsn
+        self.engine = sa.create_engine(dsn, echo=True, json_deserializer=lambda x: x)
+        self.setup()
 
-def get_engine():
-    return sa.create_engine('cockroachdb://root@localhost:26257/test?application_name=cockroach&sslmode=disable', echo=True, json_deserializer=lambda x: x)
+    def setup(self):
+        meta.create_all(self.engine)
 
-def open(path, engine=None, mode='r', rev=None):
-    path = os.path.normpath(path)
-    engine = engine or get_engine()
+    def get_meta_history(self, path):
+        sql = sa.select([history.c.id, history.c.rev, history.c.created, history.c.owner, history.c.meta]).where(history.c.path == path).order_by(sa.desc(history.c.rev))
+        for row in self.engine.execute(sql):
+            yield row
 
-    connection = engine.connect()
-    vf = VersionedFile(path, mode=mode, engine=connection)
-    if mode == 'r':
-        sql = sa.select([history.c.id, 
-                         active.c.version,
-                         history.c.rev,
-                         history.c.data,
-                         active.c.created,
-                         active.c.modified,
-                         history.c.meta]).where(active.c.path == path).where(active.c.version == history.c.id)
-        if rev:
-            sql = sql.where(history.c.rev == rev)
-        result = connection.execute(sql)
-        if not result:
-            raise FileNotFoundError(path)
-        info = result.fetchone()
-        vf.update(info)
-    elif mode == 'w':
-        trans = connection.begin()
-        hist_inst = history.insert({'path': path, 
-                                    'rev': sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1]).where(history.c.path==path)
-                                   })
-        result = connection.execute(hist_inst)
-        vf.version = result.inserted_primary_key[0]
-        vf.transaction = trans
-    return vf
+    def __contains__(self, path):
+        return bool(self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).fetchone()[0])
+
+    def listdir(self, dirname):
+        dirname = os.path.normpath(dirname)
+        if not dirname.endswith('/'):
+            dirname += '/'
+        sql = sa.select([active]).where(active.c.path.like('{}%'.format(dirname))).order_by(sa.asc(active.c.path))
+        numslashes = dirname.count('/')
+        for row in self.engine.execute(sql):
+            if row.path.count('/') > numslashes:
+                continue
+            yield row.path, row.created, row.modified, row.version
+    
+    def copyfile(self, filename_or_fileobj, topath, content_type=None):
+        import mimetypes
+        if isinstance(filename_or_fileobj, str):
+            filename_or_fileobj = open(filename_or_fileobj, 'rb')
+        if not content_type and hasattr(filename_or_fileobj, 'name'):
+            content_type = mimetypes.guess_type(filename_or_fileobj.name)[0]
+            to_ctype = mimetypes.guess_type(topath)[0]
+            if to_ctype != content_type:
+                content_type = to_ctype
+        with self.open(topath, mode='w') as tofile:
+            tofile.content_type = content_type
+            while 1:
+                data = filename_or_fileobj.read(8192)
+                if not data:
+                    break
+                tofile.write(data)
+            filename_or_fileobj.close()
+        return tofile
+
+    def delete(self, path, owner='*'):
+        path = os.path.normpath(path)
+        if not self.check_perm(path, owner=owner, perm='d'):
+            raise PermissionError(path)
+        sql = active.delete().where(active.c.path == path)
+        result = self.engine.execute(sql)
+        return bool(result)
+
+    def check_perm(self, path, owner='*', perm='r'):
+        path = os.path.normpath(path)
+        dirs = [path]
+        sp = path.split('/')[:-1]
+        while sp:
+            p = '/'.join(sp) + '/'
+            dirs.append(p)
+            sp.pop(-1)
+
+        sql = sa.select([perms]).where(perms.c.perm == perm).where(perms.c.path.in_(dirs))
+        if owner != '*':
+            sql = sql.where(perms.c.owner.in_([owner, '*']))
+        else:
+            sql = sql.where(perms.c.owner == owner)
+        sql = sql.order_by(sa.desc(perms.c.path))
+        result = self.engine.execute(sql)
+        return list(result)
+
+    def set_perm(self, path, owner, perm='r'):
+        values = {
+            'path': path,
+            'owner': owner,
+            'perm': perm
+        }
+        # sql = insert(perms).values(**values).on_conflict_do_update(constraint=perms.primary_key, set_=values)
+        sql = insert(perms).values(**values).on_conflict_do_nothing(constraint=perms.primary_key)
+        result = self.engine.execute(sql)
+
+
+    def clear_perm(self, path, owner, perm):
+        return self.engine.execute(perms.delete().where(path == path).where(owner == owner).where(perm == perm))
+
+    def open(self, path, mode='r', rev=None, version=None, owner='*'):
+        path = os.path.normpath(path)
+
+        if not self.check_perm(path, owner=owner, perm=mode):
+            raise PermissionError(path)
+
+        connection = self.engine.connect()
+        vf = VersionedFile(path, mode=mode, conn=connection)
+        if mode == 'r':
+            cols = [history.c.id, 
+                    history.c.rev,
+                    history.c.data,
+                    history.c.content_type,
+                    history.c.meta]
+            if not (version or rev):
+                cols.extend([
+                    active.c.created,
+                    active.c.modified])
+            sql = sa.select(cols)
+            if version:
+                sql = sql.where(history.c.id == version)
+            elif rev:
+                sql = sql.where(history.c.rev == rev)
+            else:
+                sql = sql.where(active.c.path == path).where(active.c.version == history.c.id)
+            result = connection.execute(sql)
+            if not result:
+                raise FileNotFoundError(path)
+            info = result.fetchone()
+            vf.update(info)
+        elif mode == 'w':
+            trans = connection.begin()
+            hist_inst = history.insert({'path': path, 
+                                        'rev': sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1]).where(history.c.path==path)
+                                       })
+            result = connection.execute(hist_inst)
+            vf.version = result.inserted_primary_key[0]
+            vf._transaction = trans
+        return vf
 
 if __name__ == '__main__':
-    engine = get_engine()
-    setup(engine)
-    # vf = open('/test.jpg', engine=engine, mode='w')
-    # with io.open('/Users/dcs/Pictures/Jean-Léon_Gérôme_-_Diogenes_-_Walters_37131.jpg', 'rb') as fp:
-    #     vf.write(fp.read())
-    # vf.close()
-    # print(vf.__dict__)
-    vf = open('/test.jpg', engine=engine, mode='r')
+    fs = FSManager('cockroachdb://root@localhost:26257/test?application_name=cockroach&sslmode=disable')
+    
+    vf = fs.open('/test.jpg', mode='r')
     hr = hashlib.md5()
     while 1:
         data = vf.read(8192)
@@ -188,3 +286,4 @@ if __name__ == '__main__':
             break
         hr.update(data)
     print(hr.hexdigest())
+    print(vf.__dict__)
