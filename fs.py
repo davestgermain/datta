@@ -4,6 +4,7 @@ import io
 import hashlib
 import os.path
 import mimetypes
+import msgpack
 
 
 try:
@@ -59,24 +60,103 @@ perms = sa.Table('fs_perms', meta,
 
 NEXTREV = sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1])
 
-class VersionedFile(io.BufferedIOBase):
-    created = None
-    modified = None
+def _file_meta_query(rev=None, version=None):
+    cols = [history.c.id, 
+            history.c.rev,
+            history.c.data,
+            history.c.content_type,
+            history.c.owner,
+            history.c.meta]
+    if not (version or rev):
+        cols.extend([
+            active.c.created,
+            active.c.modified,
+            active.c.version,
+            active.c.path])
+    sql = sa.select(cols)
+    if version:
+        sql = sql.where(history.c.id == version)
+    elif rev:
+        sql = sql.where(history.c.rev == rev)
+    else:
+        sql = sql.where(active.c.version == history.c.id)
+    return sql
 
-    def __init__(self, path, conn=None, mode='r', transaction=None, meta=None, **kwargs):
+
+def check_perm(conn, path, owner='*', perm='r', raise_exception=True):
+    path = os.path.normpath(path)
+    dirs = [path]
+    sp = path.split('/')[:-1]
+    while sp:
+        p = '/'.join(sp) + '/'
+        dirs.append(p)
+        sp.pop(-1)
+
+    sql = sa.select([perms]).where(perms.c.perm == perm).where(perms.c.path.in_(dirs))
+    if owner != '*':
+        sql = sql.where(perms.c.owner.in_([owner, '*']))
+    else:
+        sql = sql.where(perms.c.owner == owner)
+    sql = sql.order_by(sa.desc(perms.c.path))
+    result = list(conn.execute(sql))
+    if raise_exception and not result:
+        raise PermissionError(path)
+    else:
+        return result
+
+def set_perm(conn, path, owner, perm='r'):
+    sql = insert(perms)
+    if isinstance(perm, list):
+        sql = sql.values([{'path': path, 'owner': owner, 'perm': p} for p in perm])
+    else:
+        values = {
+            'path': path,
+            'owner': owner,
+            'perm': perm
+        }
+        sql = sql.values(path=path, owner=owner, perm=perm)
+    # sql = sql.on_conflict_do_update(constraint=perms.primary_key, set_=values)
+    sql = sql.on_conflict_do_nothing(constraint=perms.primary_key)
+    result = conn.engine.execute(sql)
+
+
+class VersionedFile(io.BufferedIOBase):
+    def __init__(self, filename, conn, mode='r', requestor='*', meta=None, rev=None, version=None, **kwargs):
         io.BufferedIOBase.__init__(self)
-        self.path = self.name = path
-        self.mode = mode
-        self._conn = conn
-        self._transaction = transaction
-        self._buf = bytearray()
+        self.path = self.name = filename
+        check_perm(conn, self.path, owner=requestor, perm=mode)
+        self.created = None
+        self.modified = None
         self.meta = meta or {}
-        self._chunks = None
+        self.mode = mode
         self._version = None
+        _transaction = None
+        if mode == 'r' and 'id' not in kwargs:
+            result = conn.execute(_file_meta_query(rev=rev, version=version).where(active.c.path == self.path)).first()
+            if not result:
+                raise FileNotFoundError(self.path)
+            self.update(result)
+        elif mode == 'w':
+            _transaction = conn.begin()
+            result = conn.execute(_file_meta_query(rev=rev, version=version).where(active.c.path == self.path)).first()
+            if result:
+                self.update(result)
+                self.data = None
+            self.owner = requestor 
+
+        self._transaction = _transaction
+        self._conn = conn
+        self._buf = bytearray()
+        self._chunks = None
+        
         self.update(kwargs)
         if mode == 'w':
             self.sha256 = hashlib.sha256()
             self._length = 0
+        elif mode == 'r':
+            if self.data:
+                # won't need the connection
+                self._conn = None
 
     @property
     def _hist_data(self):
@@ -121,10 +201,12 @@ class VersionedFile(io.BufferedIOBase):
                 self.version = self._conn.execute(history.insert(hist_data)).inserted_primary_key[0]
             else:
                 self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
-            upd = insert(active).values(path=self.path, created=sa.func.now(), modified=sa.func.now(), version=self.version).on_conflict_do_update(constraint=active.primary_key, set_={'version': self.version, 'modified': sa.func.now()})
+            created = self.created or sa.func.now()
+            upd = insert(active).values(path=self.path, created=created, modified=created, version=self.version).on_conflict_do_update(constraint=active.primary_key, set_={'version': self.version, 'modified': sa.func.now()})
             self._conn.execute(upd)
             self._transaction.commit()
             self._conn.close()
+            self._transaction = None
         self.mode = None
     
     def get_chunks(self):
@@ -192,22 +274,32 @@ class VersionedFile(io.BufferedIOBase):
             while self._buf:
                 chunk, self._buf = self._buf[:CHUNKSIZE], self._buf[CHUNKSIZE:]
                 self._conn.execute(chunks.insert({'version': self.version, 'data': chunk}))
+        return len(data)
 
     def update(self, kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def seekable(self):
+        return False
 
-class FSManager:
+
+class FSManager(object):
+    sqlalchemy_meta = meta
+
     def __init__(self, dsn, debug=False):
         self.dsn = dsn
         self.engine = sa.create_engine(dsn, echo=debug, json_deserializer=lambda x: x)
         self.setup()
 
     def setup(self):
-        meta.create_all(self.engine)
+        self.sqlalchemy_meta.create_all(self.engine)
 
     def get_meta_history(self, path):
+        """
+        return historical metadata for the path.
+        if path is a directory, returns metadata for all items in the directory
+        """
         sql = sa.select([history.c.path, history.c.id, history.c.rev, history.c.created, history.c.owner, history.c.meta]).order_by(sa.desc(history.c.created))
         if path.endswith('/'):
             sql = sql.where(history.c.path.like(path + '%'))
@@ -221,19 +313,35 @@ class FSManager:
             yield row
 
     def __contains__(self, path):
-        result = self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).fetchone()
+        result = self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).first()
         return bool(result)
 
-    def listdir(self, dirname, walk=False):
+    def listdir(self, dirname, walk=False, owner=None, limit=None, open_files=False, order=None):
         dirname = os.path.normpath(dirname)
         if not dirname.endswith('/'):
             dirname += '/'
-        sql = sa.select([active]).where(active.c.path.like('{}%'.format(dirname))).order_by(sa.asc(active.c.path))
+        if open_files:
+            sql = _file_meta_query()
+        else:
+            sql = sa.select([active])
+        sql = sql.where(active.c.path.like('{}%'.format(dirname)))
+        if order:
+            sql = sql.order_by(order)
+        
+        if limit is not None:
+            sql = sql.limit(limit)
         numslashes = dirname.count('/')
-        for row in self.engine.execute(sql):
-            if not walk and row.path.count('/') > numslashes:
-                continue
-            yield row.path, row.created, row.modified, row.version
+        with self.engine.begin() as conn:
+            for row in conn.execute(sql):
+                if not walk and row.path.count('/') > numslashes:
+                    continue
+                if open_files:
+                    data = dict(row)
+                    yield VersionedFile(row.path, conn, mode='r', requestor=owner, **row)
+                else:
+                    if owner and not check_perm(conn, row.path, owner=owner, raise_exception=False):
+                        continue
+                    yield row.path, row.created, row.modified, row.version
     
     def copyfile(self, filename_or_fileobj, topath, content_type=None):
         if isinstance(filename_or_fileobj, unicode):
@@ -253,68 +361,59 @@ class FSManager:
             filename_or_fileobj.close()
         return tofile
 
-    def delete(self, path, owner='*'):
+    def delete(self, path, owner='*', include_history=False):
         """
         delete a file
         """
         path = os.path.normpath(path)
-        if not self.check_perm(path, owner=owner, perm='d'):
-            raise PermissionError(path)
         with self.engine.begin() as conn:
-            # record the history of deletion
-            hist_inst = history.insert({'path': path, 
-                                        'rev': NEXTREV.where(history.c.path==path),
-                                        'owner': owner,
-                                        'meta': {'comment': 'deleted'}
-                                       })
-            conn.execute(hist_inst)
+            check_perm(conn, path, owner=owner, perm='d')
             sql = active.delete().where(active.c.path == path)
             result = conn.execute(sql)
+            if include_history:
+                # delete everything
+                conn.execute(chunks.delete().where(
+                        chunks.c.version.in_(
+                                sa.select([history.c.id]).where(history.c.path == path)
+                                )
+                            )
+                        )    
+                conn.execute(history.delete().where(history.c.path == path))
+            else:
+                # record the history of deletion
+                hist_inst = history.insert({'path': path, 
+                                            'rev': NEXTREV.where(history.c.path==path),
+                                            'owner': owner,
+                                            'meta': {'comment': 'deleted'}
+                                           })
+                conn.execute(hist_inst)
             return bool(result)
 
-    def check_perm(self, path, owner='*', perm='r', conn=None):
+    def delete_old_versions(self, path, owner='*', maxrev=-1):
         path = os.path.normpath(path)
-        dirs = [path]
-        sp = path.split('/')[:-1]
-        while sp:
-            p = '/'.join(sp) + '/'
-            dirs.append(p)
-            sp.pop(-1)
-
-        sql = sa.select([perms]).where(perms.c.perm == perm).where(perms.c.path.in_(dirs))
-        if owner != '*':
-            sql = sql.where(perms.c.owner.in_([owner, '*']))
-        else:
-            sql = sql.where(perms.c.owner == owner)
-        sql = sql.order_by(sa.desc(perms.c.path))
-        result = (conn or self.engine).execute(sql)
-        return list(result)
+        with self.engine.begin() as conn:
+            check_perm(conn, path, owner=owner, perm='d')
+            sql = history.delete().where(history.c.path == path)
+            if maxrev > -1:
+                sql = sql.where(history.c.rev < maxrev)
+            else:
+                # get the active version
+                version = conn.execute(sa.select([active.c.version]).where(active.c.path == path)).first()[0]
+                sql = sql.where(history.c.id != version)
+            return conn.execute(sql).rowcount
 
     def set_perm(self, path, owner, perm='r'):
-        sql = insert(perms)
-        if isinstance(perm, list):
-            sql = sql.values([{'path': path, 'owner': owner, 'perm': p} for p in perm])
-        else:
-            values = {
-                'path': path,
-                'owner': owner,
-                'perm': perm
-            }
-            sql = sql.values(path=path, owner=owner, perm=perm)
-        # sql = sql.on_conflict_do_update(constraint=perms.primary_key, set_=values)
-        sql = sql.on_conflict_do_nothing(constraint=perms.primary_key)
-        result = self.engine.execute(sql)
-
+        return set_perm(self.engine, path, owner, perm=perm)
 
     def clear_perm(self, path, owner, perm):
-        return self.engine.execute(perms.delete().where(path == path).where(owner == owner).where(perm == perm))
+        return self.engine.execute(perms.delete().where(perms.c.path == path).where(perms.c.owner == owner).where(perms.c.perm == perm))
 
     def maxrev(self, prefix='/'):
         """
         return maximum revision for fs, starting at prefix
         """
         sql = sa.select([sa.func.max(history.c.rev)]).where(history.c.path.like(prefix + '%'))
-        result = self.engine.execute(sql).fetchone()[0] or 0
+        result = self.engine.execute(sql).first()[0] or -1
         return result
 
     def changes(self, prefix='/', since=0):
@@ -322,41 +421,42 @@ class FSManager:
         for row in self.engine.execute(sql):
             yield row[0]
 
-    def open(self, path, mode='r', rev=None, version=None, owner='*'):
-        path = os.path.normpath(path)
-
-        connection = self.engine.connect()
-        vf = VersionedFile(path, mode=mode, conn=connection)
-        if mode == 'r':
-            cols = [history.c.id, 
-                    history.c.rev,
-                    history.c.data,
-                    history.c.content_type,
-                    history.c.owner,
-                    history.c.meta]
-            if not (version or rev):
-                cols.extend([
-                    active.c.created,
-                    active.c.modified,
-                    active.c.version])
-            sql = sa.select(cols)
-            if version:
-                sql = sql.where(history.c.id == version)
-            elif rev:
-                sql = sql.where(history.c.rev == rev)
+    def get_data(self, path, owner='*'):
+        """
+        gets the stored data
+        """
+        sql = sa.select([history.c.data, history.c.content_type]).where(history.c.id == active.c.version).where(active.c.path == path)
+        result = self.engine.execute(sql).first()
+        if result:
+            data, ctype = result
+            if ctype == 'application/msgpack':
+                return msgpack.unpackb(data, encoding='utf8')
             else:
-                sql = sql.where(active.c.path == path).where(active.c.version == history.c.id)
-            result = connection.execute(sql).fetchone()
-            if not result:
-                raise FileNotFoundError(path)
-            elif not self.check_perm(path, owner=owner, perm=mode, conn=connection):
-                raise PermissionError(path)  
-            vf.update(result)
-        elif mode == 'w':
-            if not self.check_perm(path, owner=owner, perm=mode, conn=connection):
-                raise PermissionError(path)
-            vf._transaction = connection.begin()
-        return vf
+                return data, ctype
+
+    def set_data(self, path, data, owner='*'):
+        """
+        sets the data as a msgpack string
+        """
+        with self.open(path, mode='w', owner=owner) as fp:
+            fp.content_type = 'application/msgpack'
+            fp.write(msgpack.packb(data, use_bin_type=True))
+
+    def open(self, path, mode='r', owner='*', rev=None, version=None):
+        path = os.path.normpath(path)
+        return VersionedFile(path, self.engine.connect(), mode=mode, rev=rev, requestor=owner, version=version)
+
+    def open_many(self, paths, mode='r', owner='*'):
+        """
+        Open files
+        """
+        with self.engine.begin() as conn:
+            paths = (os.path.normpath(p) for p in paths)
+            result = conn.execute(_file_meta_query().where(active.c.path.in_(paths)))
+        
+            for data in result:
+                vf = VersionedFile(path, conn, requestor=owner, mode=mode, **data)
+                yield vf
 
 
 MANAGERS = {}
