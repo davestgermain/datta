@@ -8,7 +8,6 @@ import math
 from hashlib import md5
 import psycopg2
 from werkzeug.contrib.fixers import ProxyFix
-from datta.base import BaseDB
 
 OLD_DATE = datetime.datetime(2018, 1, 1, 0, 0, 0)
 
@@ -126,61 +125,43 @@ class FSCacheManager(CacheManager):
                 pass
 
 
-class DBCacheManager(CacheManager, BaseDB):
-    CREATE_SQL = '''
-            CREATE TABLE IF NOT EXISTS pagecache (
-                url STRING PRIMARY KEY,
-                response BYTES,
-                exp INT
-            )
-            '''
-    GET_RESP_SQL = 'SELECT response, exp FROM pagecache WHERE url = %s'
-    DEL_RESP_SQL = 'DELETE FROM pagecache WHERE url = %s RETURNING NOTHING'
-    SET_RESP_SQL = 'UPSERT INTO pagecache (url, response, exp) VALUES (%s, %s, %s) RETURNING NOTHING'
-
+class DBCacheManager(CacheManager):
     def _setup(self):
-        BaseDB.__init__(self, self.wiki.storage.dsn)
-
-        self.inc_counter = self.wiki.storage.inc_counter
-        self.storage = self.wiki.storage
-
-        if not self.storage.get_counter('cache_hit'):
-            self.storage.set_counter('cache_hit', 0)
-            self.storage.set_counter('cache_miss', 0)
+        self.fs = self.wiki.storage.fs
+        self._prefix = '/.cache' + self.wiki.storage._root
+        self.fs.set_perm(self._prefix, 'cache', ['r', 'w', 'd'])
     
+    def _path(self, url):
+        return os.path.join(self._prefix, url[1:])
+
     def __getitem__(self, url):
-        with self.cursor() as c:
-            c.execute(self.GET_RESP_SQL, (url,))
-            r = c.fetchone()
-            if r:
-                resp, exp = r
+        path = self._path(url)
+        try:
+            with self.fs.open(path, mode='r', owner='cache') as fp:
+                exp = fp.meta['exp']
                 if exp >= time.time():
-                    resp = cPickle.loads(bytes(resp))
-                    self.inc_counter(c, 'cache_hit')
+                    resp = cPickle.load(fp)
+                    self._stats['h'] += 1
                     return resp
                 else:
-                    c.execute(self.DEL_RESP_SQL, (url,))
-            self.inc_counter(c, 'cache_miss')
+                    self.fs.delete(path, include_history=True)
+        except Exception:
+            pass
+        self._stats['m'] += 1
 
     def __setitem__(self, url, val):
         response, exp = val
-        data = cPickle.dumps(response)
-        self.execute(self.SET_RESP_SQL, (url, data, int(exp)))
+        path = self._path(url)
+        with self.fs.open(path, mode='w', owner='cache') as fp:
+            fp.meta['exp'] = exp
+            cPickle.dump(response, fp)
     
     def __delitem__(self, url):
-        self.execute(self.DEL_RESP_SQL, (url,))
+        self.fs.delete(self._path(url), include_history=True)
     
     def clear(self, url):
-        self.execute('TRUNCATE pagecache')
-
-    def stats(self):
-        hits = self.storage.get_counter('cache_hit')
-        misses = self.storage.get_counter('cache_miss')
-        if hits or misses:
-            ratio = (float(hits) / (hits + misses)) * 100
-        else:
-            ratio = 0
-        return hits, misses, ratio
+        for i in self.fs.listdir('/+cache/'):
+            self.fs.delete(i.path, include_history=True)
 
 
 class CachedWiki(hatta.Wiki):

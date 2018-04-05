@@ -9,7 +9,7 @@ config = WikiConfig(
     pages_path='/false-dilemma',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
 )
-# config.set('cache_manager', 'db')
+config.set('cache_manager', 'db')
 
 Wiki.storage_class = dbstorage.WikiStorage
 # Wiki.index_class = dbsearch.WikiDBSearch
