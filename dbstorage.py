@@ -167,7 +167,7 @@ class WikiStorage(object):
     def all_pages(self):
         """Iterate over the titles of all pages in the wiki."""
         for info in self.fs.listdir(self._root, walk=True):
-            yield info[0].replace(self._root, '', 1)
+            yield info.path.replace(self._root, '', 1)
 
     def changed_since(self, rev):
         """

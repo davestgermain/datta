@@ -4,7 +4,7 @@ import io
 import hashlib
 import os.path
 import mimetypes
-import msgpack
+from collections import defaultdict
 
 
 try:
@@ -42,6 +42,7 @@ active = sa.Table('fs_files', meta,
         sa.Column('created', sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column('modified', sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column('version', sa.ForeignKey(history.c.id), nullable=False),
+        sa.Column('length', sa.Integer, nullable=False, default=0),
 )
 
 chunks = sa.Table('fs_chunks', meta,
@@ -60,26 +61,35 @@ perms = sa.Table('fs_perms', meta,
 
 NEXTREV = sa.select([sa.func.ifnull(sa.func.max(history.c.rev), -1) + 1])
 
-def _file_meta_query(rev=None, version=None):
-    cols = [history.c.id, 
+def _file_meta_query(rev=None, version=None, include_data=True, cols=None):
+    scols = []
+    scols.extend([history.c.id,
             history.c.rev,
-            history.c.data,
             history.c.content_type,
             history.c.owner,
-            history.c.meta]
+            history.c.meta
+        ])
     if not (version or rev):
-        cols.extend([
+        scols.extend([
             active.c.created,
             active.c.modified,
             active.c.version,
-            active.c.path])
-    sql = sa.select(cols)
+            active.c.path,
+            active.c.length])
+    sql = sa.select(scols)
+    if include_data:
+        sql.append_column(history.c.data)
+    if cols:
+        for c in cols:
+            sql.append_column(c)
     if version:
         sql = sql.where(history.c.id == version)
     elif rev:
         sql = sql.where(history.c.rev == rev)
     else:
-        sql = sql.where(active.c.version == history.c.id)
+        # this is important because the query planner isn't smart enough to do the right join
+        j = sa.join(history, active, (active.c.version == history.c.id) & (active.c.path == history.c.path))
+        sql = sql.select_from(j)
     return sql
 
 
@@ -136,6 +146,8 @@ class VersionedFile(io.BufferedIOBase):
             if not result:
                 raise FileNotFoundError(self.path)
             self.update(result)
+            # if self.data:
+            #     conn.close()
         elif mode == 'w':
             _transaction = conn.begin()
             result = conn.execute(_file_meta_query(rev=rev, version=version).where(active.c.path == self.path)).first()
@@ -153,10 +165,6 @@ class VersionedFile(io.BufferedIOBase):
         if mode == 'w':
             self.sha256 = hashlib.sha256()
             self._length = 0
-        elif mode == 'r':
-            if self.data:
-                # won't need the connection
-                self._conn = None
 
     @property
     def _hist_data(self):
@@ -170,6 +178,8 @@ class VersionedFile(io.BufferedIOBase):
         if not content_type:
             content_type = mimetypes.guess_type(self.path)[0]
         d['content_type'] = content_type
+        if getattr(self, 'force_rev', None):
+            d['rev'] = self.force_rev
         return d
 
     @property
@@ -188,7 +198,6 @@ class VersionedFile(io.BufferedIOBase):
     def close(self):
         if self.writable():
             data = bytes(self._buf) or None
-            self.meta['length'] = self._length
             self.meta['sha256'] = self.sha256.hexdigest()
             hist_data = {
                 'data': data,
@@ -202,7 +211,15 @@ class VersionedFile(io.BufferedIOBase):
             else:
                 self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
             created = self.created or sa.func.now()
-            upd = insert(active).values(path=self.path, created=created, modified=created, version=self.version).on_conflict_do_update(constraint=active.primary_key, set_={'version': self.version, 'modified': sa.func.now()})
+            upd = insert(active).values(
+                            path=self.path,
+                            created=created,
+                            modified=created, 
+                            version=self.version,
+                            length=self._length).on_conflict_do_update(constraint=active.primary_key, set_={
+                                    'version': self.version,
+                                    'length': self._length,
+                                    'modified': sa.func.now()})
             self._conn.execute(upd)
             self._transaction.commit()
             self._conn.close()
@@ -316,21 +333,36 @@ class FSManager(object):
         result = self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).first()
         return bool(result)
 
-    def listdir(self, dirname, walk=False, owner=None, limit=None, open_files=False, order=None):
+    def subdirectories(self, dirname):
+        """
+        returns the subdirectories off of dirname
+        """
         dirname = os.path.normpath(dirname)
         if not dirname.endswith('/'):
             dirname += '/'
-        if open_files:
-            sql = _file_meta_query()
-        else:
-            sql = sa.select([active])
+        
+        sql = r"select regexp_replace(path, %s, %s) as sd from fs_files where path like %s"
+        counts = defaultdict(int)
+        for sd, in self.engine.execute(sql, ['{0}(.*)/.*'.format(dirname), r'\1', '{}%'.format(dirname)]):
+            counts[sd] += 1
+        return counts.items()
+
+    def listdir(self, dirname, walk=False, owner=None, limit=None, open_files=False, order=None, where=None, cols=None):
+        dirname = os.path.normpath(dirname)
+        if not dirname.endswith('/'):
+            dirname += '/'
+        sql = _file_meta_query(include_data=open_files)
         sql = sql.where(active.c.path.like('{}%'.format(dirname)))
-        if order:
+        if where is not None:
+            sql = sql.where(where)
+        # if not walk:
+        #     sql = sql.where(active.c.path.notlike('{}%/%'.format(dirname)))
+        if order is not None:
             sql = sql.order_by(order)
         
         if limit is not None:
             sql = sql.limit(limit)
-        numslashes = dirname.count('/')
+        numslashes = dirname.count('/') 
         with self.engine.begin() as conn:
             for row in conn.execute(sql):
                 if not walk and row.path.count('/') > numslashes:
@@ -341,7 +373,7 @@ class FSManager(object):
                 else:
                     if owner and not check_perm(conn, row.path, owner=owner, raise_exception=False):
                         continue
-                    yield row.path, row.created, row.modified, row.version
+                    yield row
     
     def copyfile(self, filename_or_fileobj, topath, content_type=None):
         if isinstance(filename_or_fileobj, unicode):
@@ -402,6 +434,23 @@ class FSManager(object):
                 sql = sql.where(history.c.id != version)
             return conn.execute(sql).rowcount
 
+    def rename(self, frompath, topath, owner='*'):
+        frompath = os.path.normpath(frompath)
+        topath = os.path.normpath(topath)
+        assert frompath in self
+        with self.engine.begin() as conn:
+            check_perm(conn, frompath, owner=owner, perm='w')
+            check_perm(conn, topath, owner=owner, perm='w')
+            hist_inst = history.insert({'path': frompath, 
+                                        'rev': NEXTREV.where(history.c.path==frompath),
+                                        'owner': owner,
+                                        'meta': {'comment': 'moved to %s' % topath}
+                                       })
+            conn.execute(hist_inst)
+            sql = active.update().where(active.c.path == frompath).values(path=topath)
+            result = conn.execute(sql)
+            return result.rowcount
+
     def set_perm(self, path, owner, perm='r'):
         return set_perm(self.engine, path, owner, perm=perm)
 
@@ -425,11 +474,12 @@ class FSManager(object):
         """
         gets the stored data
         """
-        sql = sa.select([history.c.data, history.c.content_type]).where(history.c.id == active.c.version).where(active.c.path == path)
+        sql = sa.select([history.c.data, history.c.content_type]).select_from(sa.join(history, active)).where(active.c.path == path)
         result = self.engine.execute(sql).first()
         if result:
             data, ctype = result
             if ctype == 'application/msgpack':
+                import msgpack
                 return msgpack.unpackb(data, encoding='utf8')
             else:
                 return data, ctype
@@ -438,6 +488,7 @@ class FSManager(object):
         """
         sets the data as a msgpack string
         """
+        import msgpack
         with self.open(path, mode='w', owner=owner) as fp:
             fp.content_type = 'application/msgpack'
             fp.write(msgpack.packb(data, use_bin_type=True))
@@ -455,7 +506,7 @@ class FSManager(object):
             result = conn.execute(_file_meta_query().where(active.c.path.in_(paths)))
         
             for data in result:
-                vf = VersionedFile(path, conn, requestor=owner, mode=mode, **data)
+                vf = VersionedFile(data.path, conn, requestor=owner, mode=mode, **data)
                 yield vf
 
 
