@@ -128,7 +128,7 @@ class FSCacheManager(CacheManager):
 class DBCacheManager(CacheManager):
     def _setup(self):
         self.fs = self.wiki.storage.fs
-        self._prefix = '/.cache' + self.wiki.storage._root
+        self._prefix = os.path.join('/.cache/', self.wiki.storage._root.replace('/', ''), '')
         self.fs.set_perm(self._prefix, 'cache', ['r', 'w', 'd'])
     
     def _path(self, url):
@@ -144,7 +144,7 @@ class DBCacheManager(CacheManager):
                     self._stats['h'] += 1
                     return resp
                 else:
-                    self.fs.delete(path, include_history=True)
+                    self.fs.delete(path, owner='cache', include_history=True)
         except Exception:
             pass
         self._stats['m'] += 1
@@ -157,7 +157,7 @@ class DBCacheManager(CacheManager):
             cPickle.dump(response, fp)
     
     def __delitem__(self, url):
-        self.fs.delete(self._path(url), include_history=True)
+        self.fs.delete(self._path(url), owner='cache', include_history=True)
     
     def clear(self, url):
         for i in self.fs.listdir('/+cache/'):

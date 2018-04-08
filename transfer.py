@@ -30,7 +30,7 @@ for title, rev, dt, author, comment in history:
 
 wiki = wikicache.CachedWiki(hatta.WikiConfig())
 wiki.storage = dbstore
-# wiki.index = dbsearch.WikiDBSearch('', 'en', dbstore)
+wiki.index = dbsearch.WikiDBSearch('', 'en', dbstore)
 wiki.index.update(wiki)
 
 

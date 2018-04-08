@@ -8,11 +8,12 @@ config = WikiConfig(
     repo_path=dsn,
     pages_path='/false-dilemma',
     site_name='Gate Gate Paragate Parasamgate Bodhi Svaha',
+    cache_path='/tmp/wiki/false-dilemma/'
 )
 config.set('cache_manager', 'db')
 
 Wiki.storage_class = dbstorage.WikiStorage
-# Wiki.index_class = dbsearch.WikiDBSearch
+Wiki.index_class = dbsearch.WikiDBSearch
 wikiapp = Wiki(config).application
 
 # wikicache.CachedWiki.storage_class = dbstorage.WikiStorage
