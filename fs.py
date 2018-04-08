@@ -14,6 +14,8 @@ except NameError:
         pass
     class FileNotFoundError(IOError):
         pass
+    class FileError(IOError):
+        pass
 
 try:
     unicode = unicode
@@ -21,7 +23,7 @@ except NameError:
     unicode = str
 
 
-CHUNKSIZE = 1024*1024
+CHUNKSIZE = 800*1024
 
 meta = sa.MetaData()
 history = sa.Table('fs_history', meta,
@@ -139,6 +141,7 @@ class VersionedFile(io.BufferedIOBase):
         self.modified = None
         self.meta = meta or {}
         self.mode = mode
+        self.length = 0
         self._version = None
         _transaction = None
         if mode == 'r' and 'id' not in kwargs:
@@ -158,19 +161,25 @@ class VersionedFile(io.BufferedIOBase):
 
         self._transaction = _transaction
         self._conn = conn
-        self._buf = bytearray()
         self._chunks = None
-        
         self.update(kwargs)
-        if mode == 'w':
-            self.sha256 = hashlib.sha256()
-            self._length = 0
+        if mode == 'r':
+            self._buf = io.BytesIO(self.data)
+            if self.data is None:
+                self._consumed = 0
+                self._chunks = self.get_chunks()
+            else:
+                self._consumed = self.length = len(self.data)
+        else:
+            self._buf = io.BytesIO()
+            self._consumed = None
+            # self.sha256 = hashlib.sha256()
 
     @property
     def _hist_data(self):
         d = {
             'path': self.path,
-            'rev': NEXTREV.where(history.c.path==self.path)
+            'rev': NEXTREV.where(history.c.path == self.path)
         }
         if self.created:
             d['created'] = self.created
@@ -182,54 +191,64 @@ class VersionedFile(io.BufferedIOBase):
             d['rev'] = self.force_rev
         return d
 
-    @property
-    def version(self):
-        if self.mode == 'w':
-            if not self._version:
-                # trigger an insert
-                result = self._conn.execute(history.insert(self._hist_data))
-                self._version = result.inserted_primary_key[0]
-        return self._version
-    
-    @version.setter
-    def version(self, v):
-        self._version = v
-
     def close(self):
         if self.writable():
-            data = bytes(self._buf) or None
-            self.meta['sha256'] = self.sha256.hexdigest()
+            self._buf.seek(0, 2)
+            length = self._buf.tell()
+            if length > CHUNKSIZE:
+                data = None
+                self._buf.seek(0)
+            else:
+                data = self._buf.getvalue()
+
+            # self.meta['sha256'] = self.sha256.hexdigest()
             hist_data = {
                 'data': data,
                 'meta': self.meta,
                 'owner': getattr(self, 'owner', None)
             }
             # try to insert into history
-            if not self._version:
-                hist_data.update(self._hist_data)
-                self.version = self._conn.execute(history.insert(hist_data)).inserted_primary_key[0]
-            else:
-                self._conn.execute(history.update().where(history.c.id == self.version).values(hist_data))
+            hist_data.update(self._hist_data)
+            self.version = self._conn.execute(history.insert(hist_data)).inserted_primary_key[0]
+            # now write the chunks
+            if data is None:
+                while 1:
+                    chunk = self._buf.read(CHUNKSIZE)
+                    if not chunk:
+                        break
+                    r = self._conn.execute(chunks.insert({'version': self.version, 'data': chunk}))
             created = self.created or sa.func.now()
+            modified = self.created if getattr(self, 'force_rev', None) else sa.func.now()
             upd = insert(active).values(
                             path=self.path,
                             created=created,
                             modified=created, 
                             version=self.version,
-                            length=self._length).on_conflict_do_update(constraint=active.primary_key, set_={
+                            length=length).on_conflict_do_update(constraint=active.primary_key, set_={
                                     'version': self.version,
-                                    'length': self._length,
-                                    'modified': sa.func.now()})
+                                    'length': length,
+                                    'modified': modified})
             self._conn.execute(upd)
             self._transaction.commit()
             self._conn.close()
             self._transaction = None
+            self._buf = None
+        else:
+            self._buf.close()
         self.mode = None
-    
+        io.BufferedIOBase.close(self)
+
     def get_chunks(self):
         result = self._conn.execute(sa.select([chunks.c.data], order_by=chunks.c.id).where(chunks.c.version==self.version))
         for r in result:
-            yield r[0]
+            chunk = r[0]
+            pos = self._buf.tell()
+            self._buf.seek(0, 2)
+            self._buf.write(chunk)
+            cr = len(chunk)
+            self._consumed += cr
+            self._buf.seek(pos)
+            yield cr
 
     def readable(self):
         return self.mode == 'r'
@@ -237,45 +256,45 @@ class VersionedFile(io.BufferedIOBase):
     def writable(self):
         return self.mode == 'w'
 
+    def consume(self, size):
+        if not self._chunks:
+            return
+        cr = 0
+        while cr < size:
+            try:
+                cr += next(self._chunks)
+            except StopIteration:
+                self._chunks = None
+                break
+
     def read(self, size=-1):
         if not self.readable():
             return
-        d = None
-        if size == -1:
-            d = self.readall()
-        elif size:
-            if self.data is not None:
-                d, self.data = self.data[:size], self.data[size:]
-            elif not self._buf:
-                self.readinto(self._buf)
-                d, self._buf = self._buf[:size], self._buf[size:]
-                d = bytes(d)
-        return d
-    
-    def readall(self):
-        if self.readable():
-            d = self.data
-            if d is None:
-                d = b''
-                for chunk in self.get_chunks():
-                    d += chunk
-            self.data = None
-            return d
+        data = self._buf.read(size)
+        dr = len(data)
+        length = size if size > 0 else self.length
+        if self._chunks and dr < length:
+            self.consume(length)
+            self._buf.seek(-dr, 1)
+            return self.read(size)
+        else:
+            return data
 
-    def readinto(self, b):
-        if self.readable():
-            if self.data:
-                b += self.data
-                return len(self.data)
-            else:
-                if self._chunks is None:
-                    self._chunks = self.get_chunks()
-                try:
-                    data = next(self._chunks)
-                except StopIteration:
-                    return None
-                b += data
-                return len(data)
+    def readall(self):
+        return self.read()
+
+    # def readinto(self, b):
+    #     if self.readable():
+    #         if self.data:
+    #             b += self.data
+    #             return len(self.data)
+    #         else:
+    #             try:
+    #                 data = next(self._chunks)
+    #             except StopIteration:
+    #                 return None
+    #             b += data
+    #             return len(data)
 
     def write(self, data):
         if not data:
@@ -284,21 +303,36 @@ class VersionedFile(io.BufferedIOBase):
             raise FileError()
         if isinstance(data, unicode):
             data = data.encode('utf8')
-        self._buf += data
-        self.sha256.update(data)
-        self._length += len(data)
-        if len(self._buf) >= CHUNKSIZE:
-            while self._buf:
-                chunk, self._buf = self._buf[:CHUNKSIZE], self._buf[CHUNKSIZE:]
-                self._conn.execute(chunks.insert({'version': self.version, 'data': chunk}))
-        return len(data)
+        
+        wrote = len(data)
+        
+        self._buf.write(data)
+        # self.sha256.update(data)
+        return wrote
 
     def update(self, kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
     def seekable(self):
-        return False
+        return True
+
+    def tell(self):
+        return self._buf.tell()
+
+    def seek(self, pos, whence=0):
+        if self.readable():
+            curpos = self._buf.tell()
+            if whence == 0:
+                abspos = pos
+            elif whence == 1:
+                abspos = curpos + pos
+            elif whence == 2:
+                abspos = self.length + pos
+            if abspos > self._consumed:
+                self.consume(abspos - curpos)
+                self._buf.seek(curpos)
+        return self._buf.seek(pos, whence)
 
 
 class FSManager(object):
@@ -416,7 +450,7 @@ class FSManager(object):
                 hist_inst = history.insert({'path': path, 
                                             'rev': NEXTREV.where(history.c.path==path),
                                             'owner': owner,
-                                            'meta': {'comment': 'deleted'}
+                                            'meta': {'operation': 'del'}
                                            })
                 conn.execute(hist_inst)
             return bool(result)
@@ -434,19 +468,25 @@ class FSManager(object):
                 sql = sql.where(history.c.id != version)
             return conn.execute(sql).rowcount
 
-    def rename(self, frompath, topath, owner='*'):
+    def rename(self, frompath, topath, owner='*', record_move=True):
         frompath = os.path.normpath(frompath)
         topath = os.path.normpath(topath)
         assert frompath in self
         with self.engine.begin() as conn:
             check_perm(conn, frompath, owner=owner, perm='w')
             check_perm(conn, topath, owner=owner, perm='w')
-            hist_inst = history.insert({'path': frompath, 
-                                        'rev': NEXTREV.where(history.c.path==frompath),
-                                        'owner': owner,
-                                        'meta': {'comment': 'moved to %s' % topath}
-                                       })
-            conn.execute(hist_inst)
+            last_rev = conn.execute(sa.select([history]).where(history.c.path == frompath).order_by(sa.desc(history.c.rev))).first()
+            
+            # move the latest history item
+            conn.execute(history.update().where(history.c.id == last_rev.id).values(path=topath))
+            # create a history item for the old path
+            if record_move:
+                hist_inst = history.insert({'path': frompath, 
+                                            'rev': NEXTREV.where(history.c.path==topath),
+                                            'owner': owner,
+                                            'meta': {'operation': 'mv', 'dest': topath}
+                                           })
+                conn.execute(hist_inst)
             sql = active.update().where(active.c.path == frompath).values(path=topath)
             result = conn.execute(sql)
             return result.rowcount
@@ -462,7 +502,9 @@ class FSManager(object):
         return maximum revision for fs, starting at prefix
         """
         sql = sa.select([sa.func.max(history.c.rev)]).where(history.c.path.like(prefix + '%'))
-        result = self.engine.execute(sql).first()[0] or -1
+        result = self.engine.execute(sql).first()[0]
+        if result is None:
+            result = -1
         return result
 
     def changes(self, prefix='/', since=0):
