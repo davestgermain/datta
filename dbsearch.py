@@ -1,85 +1,128 @@
 from hatta.search import WikiSearch
 import hatta
 import threading
-import sqlalchemy as sa
+import os.path, os
+import time
+from collections import defaultdict
+from whoosh import index, fields, query
+from whoosh.qparser import QueryParser
+from whoosh.filedb.filestore import Storage, FileStorage
+from whoosh.filedb.structfile import StructFile
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
+
+
+class DBStorage(Storage):
+    def __init__(self, fs, prefix):
+        self.fs = fs
+        self.prefix = prefix
+        self.locks = {}
+
+    def create(self):
+        self.fs.set_perm(self.prefix, '*', ['r', 'w', 'd'])
+
+    def _topath(self, name):
+        return os.path.join(self.prefix, name)
+
+    def create_file(self, name, mode='w'):
+        return self.open_file(name, mode='w')
+
+    def delete_file(self, name):
+        self.fs.delete(self._topath(name), include_history=True)
+
+    def rename_file(self, fromname, toname, safe=False):
+        if safe and self.file_exists(toname):
+            raise Exception(toname)
+        self.fs.rename(self._topath(fromname), self._topath(toname), record_move=False)
+
+    def file_exists(self, name):
+        return self._topath(name) in self.fs
+
+    def file_length(self, name):
+        with self.fs.open(self._topath(name), mode='r') as fp:
+            return fp.length
+
+    def file_modified(self, name):
+        with self.fs.open(self._topath(name), mode='r') as fp:
+            return fp.modified
+
+    def __iter__(self):
+        l = self.list()
+        return iter(l)
+
+    def list(self):
+        return [p.path.replace(self.prefix, u'') for p in self.fs.listdir(self.prefix)]
+
+    def open_file(self, name, mode='r'):
+        path = self._topath(name)
+        sf = StructFile(self.fs.open(path, mode=mode))
+        sf.is_real = False
+        sf.fileno = None
+        return sf
+
+    def lock(self, name):
+        if name not in self.locks:
+            self.locks[name] = threading.Lock()
+        return self.locks[name]
+
+    def temp_storage(self, name=None):
+        name = name or ('temp%d' % time.time())
+        prefix = os.path.join(os.path.dirname(self.prefix), name)
+        return DBStorage(self.fs, prefix)
+
+    def destroy(self):
+        for f in self.fs.listdir(self.prefix):
+            self.fs.delete(f.path, include_history=True)
 
 
 class WikiDBSearch(WikiSearch):
     INDEX_THREAD = None
 
     def __init__(self, cache_path, lang, storage):
+        self.fs = storage.fs
         self.storage = storage
-        self.engine = storage.fs.engine
         self.lang = lang
         if lang == "ja":
             self.split_text = self.split_japanese_text
-        self._thread = None
-        self._lastrev = -1
-        self.setup()
+        self.schema = fields.Schema(links=fields.KEYWORD(stored=True), title=fields.ID(stored=True, unique=True), content=fields.TEXT, has_links=fields.BOOLEAN, wanted=fields.KEYWORD(stored=True))
+        
+        ipath = os.path.join(cache_path, 'search')
+        if not os.path.exists(ipath):
+            os.makedirs(ipath)
+        self.istore = FileStorage(ipath)
+        # self.istore = DBStorage(self.fs, os.path.join('/.meta/', storage._wiki, 'search/'))
+        
+        if self.istore.index_exists():
+            self.index = self.istore.open_index()
+        else:
+            self.index = self.istore.create_index(schema=self.schema)
+        # self._thread = None
 
-    def setup(self):
-        meta = self.storage.fs.sqlalchemy_meta
-        self.words = sa.Table('search_words', meta,
-            sa.Column('page', sa.String, nullable=False, index=True),
-            sa.Column('word', sa.String, nullable=False, index=True),
-            sa.Column('count', sa.Integer, default=0, nullable=False))
-        self.links = sa.Table('search_links', meta,
-            sa.Column('src', sa.String, nullable=False, index=True),
-            sa.Column('target', sa.String, nullable=False, index=True),
-            sa.Column('label', sa.String, nullable=False),
-            sa.Column('number', sa.Integer, nullable=False, default=0))
-        meta.create_all(self.engine)
-    
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
-        # return self.storage.get_counter('searchrev') or -1
-        return self._lastrev
+        try:
+            with self.istore.open_file('reporev', mode='r') as fp:
+                rev = int(fp.read())
+        except:
+            rev = -1
+        return rev
 
-    def set_last_revision(self, rev, cursor=None):
+    def set_last_revision(self, rev):
         """Store the last indexed repository revision."""
-        # self.storage.set_counter('searchrev', rev, cursor=cursor)
-        self._lastrev = rev
+        with self.istore.create_file('reporev') as fp:
+            fp.write(str(rev))
 
     def find(self, words):
         """Iterator of all pages containing the words, and their scores."""
-
-        with self.engine.begin() as c:
-            ranks = []
-            for word in words:
-                # Calculate popularity of each word.
-                sql = 'SELECT SUM(count) FROM search_words WHERE word LIKE %s'
-                result = c.execute(sql, ('%%%s%%' % word,))
-                rank = result.fetchone()[0]
-                # If any rank is 0, there will be no results anyways
-                if not rank:
-                    return
-                ranks.append((rank, word))
-            ranks.sort()
-            # Start with the least popular word. Get all pages that contain it.
-            first_rank, first = ranks[0]
-            rest = ranks[1:]
-            sql = ('SELECT page, SUM(count) '
-                   'FROM search_words '
-                   'WHERE word LIKE %s '
-                   'GROUP BY page')
-            result = c.execute(sql, ('%%%s%%' % first,))
-            # Check for the rest of words
-            for title, first_count in result:
-                # Score for the first word
-                score = float(first_count) / float(first_rank)
-                for rank, word in rest:
-                    sql = ('SELECT SUM(count) FROM search_words '
-                           'WHERE page=%s AND word LIKE %s')
-                    r = c.execute(sql,
-                        (title, '%%%s%%' % word))
-                    count = r.fetchone()[0]
-                    if not count:
-                        # If page misses any of the words, its score is 0
-                        score = 0
-                        break
-                    score += float(count) / rank
-                if score > 0:
-                    yield int(100 * score), unicode(title)
+        with self.index.searcher() as searcher:
+            sq = query.And([query.Term("content", w) for w in words])
+            results = searcher.search(sq, limit=1000)
+            for result in results:
+                title = result['title']
+                score = int(result.score)
+                yield score, title
 
     def update(self, wiki):
         """Reindex al pages that changed since last indexing."""
@@ -90,25 +133,29 @@ class WikiDBSearch(WikiSearch):
             changed = self.storage.changed_since(last_rev)
         changed = list(changed)
         if changed:
-            if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
-                print 'alreading reindexing'
-            else:
-                self.INDEX_THREAD = threading.Thread(target=self.reindex, args=(wiki, changed))
-                self.INDEX_THREAD.daemon = True
-                self.INDEX_THREAD.start()
+            self.reindex(wiki, changed)
+            # if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
+            #     print 'alreading reindexing'
+            # else:
+            #     self.INDEX_THREAD = threading.Thread(target=self.reindex, args=(wiki, changed))
+            #     self.INDEX_THREAD.daemon = True
+            #     self.INDEX_THREAD.start()
 
     def reindex(self, wiki, pages):
-        for title in pages:
-            with self.engine.begin() as conn:
+        with self.index.writer() as writer:
+            with self.index.searcher() as s:
+                for title in pages:
+                    writer.delete_by_term('title', title, searcher=s)
+            for title in pages:
                 page = hatta.page.get_page(None, title, wiki)
-                self.reindex_page(page, title, conn)
-                print title
+                self.reindex_page(page, title, writer)
+                # print 'INDEXED', title
         self.empty = False
         rev = self.storage.repo_revision()
         self.set_last_revision(rev)
         self.INDEX_THREAD = None
 
-    def reindex_page(self, page, title, conn, text=None):
+    def reindex_page(self, page, title, writer, text=None):
         """Updates the content of the database, needs locks around."""
 
         if text is None:
@@ -119,13 +166,28 @@ class WikiDBSearch(WikiSearch):
                 text = None
 
         extract_links = getattr(page, 'extract_links', None)
+        links = []
+        wanted = []
         if extract_links and text:
-            links = extract_links(text)
+            for link, label in extract_links(text):
+                qlink = link.replace(u' ', u'%20')
+                label = label.replace(u' ', u'%20')
+                links.append(u'%s:%s' % (qlink, label))
+                if link[0] != '+' and link not in wanted and link not in self.storage:
+                    wanted.append(qlink)
         else:
             links = []
-        self.update_links(title, links, conn=conn)
-        if text is not None:
-            self.update_words(title, text, conn=conn)
+        doc = {'title': unicode(title)}
+        if links:
+            doc['links'] = u' '.join(links)
+            doc['has_links'] = True
+        if wanted:
+            doc['wanted'] = u' '.join(wanted)
+        if text:
+            doc['content'] = text
+            writer.add_document(**doc)
+        else:
+            writer.delete_by_term('title', title)
 
     def update_page(self, page, title, data=None, text=None):
         """Updates the index with new page content, for a single page."""
@@ -133,73 +195,53 @@ class WikiDBSearch(WikiSearch):
         if text is None and data is not None:
             text = unicode(data, self.storage.charset, 'replace')
         self.set_last_revision(self.storage.repo_revision())
-        with self.engine.begin() as conn:
-            self.reindex_page(page, title, conn, text)
-
-    def update_words(self, title, text, conn):
-        conn.execute(self.words.delete().where(self.words.c.page == title))
-        if not text:
-            return
-        words = self.count_words(self.split_text(text))
-        title_words = self.count_words(self.split_text(title))
-        for word, count in title_words.iteritems():
-            words[word] = words.get(word, 0) + count
-        chunk = []
-        chunksize = 100
-        inst = self.words.insert()
-        for word, count in words.iteritems():
-            chunk.append({'word': word, 'page': title, 'count': count})
-            if len(chunk) == chunksize:
-                conn.execute(inst.values(chunk))
-                chunk = []
-
-    def update_links(self, title, links_and_labels, conn):
-        conn.execute(self.links.delete().where(self.links.c.src == title))
-        inst = self.links.insert()
-        for number, (link, label) in enumerate(links_and_labels):
-            conn.execute(inst.values(src=title, target=link, label=label, number=number))
+        with self.index.writer() as writer:
+            with self.index.searcher as s:
+                writer.delete_by_term('title', title, searcher=s)
+            self.reindex_page(page, title, writer, text=text)
 
     def orphaned_pages(self):
         """Gives all pages with no links to them."""
-        sql = 'SELECT title FROM titles left join links on titles.title = links.target WHERE links.src IS NULL ORDER BY title'
-        result = self.engine.execute(sql)
-        for (title,) in result:
-            yield unicode(title)
+        linked = set()
+        total = {p for p in self.storage}
+        with self.index.searcher() as searcher:
+            for doc in searcher.search(query.Every('has_links'), limit=10000):
+                for link in doc['links'].split():
+                    link = link.split(':', 1)[0]
+                    linked.add(link.replace('%20', ' '))
+        return sorted(total - linked)
 
     def wanted_pages(self):
         """Gives all pages that are linked to, but don't exist, together with
         the number of links."""
-        sql = '''SELECT count(*) AS c, target FROM search_links 
-        LEFT JOIN titles ON titles.title = links.target 
-        WHERE titles.title IS NULL 
-        GROUP BY target ORDER BY c DESC'''
-        result = self.engine.execute(sql)
-        for (refs, db_title) in result:
-            title = unicode(db_title)
-            yield refs, title
+        with self.index.searcher() as searcher:
+            wanted = defaultdict(int)
+            for doc in searcher.search(query.Every('wanted'), limit=8000):
+                for link in doc['wanted'].split(' '):
+                    wanted[link.replace('%20', ' ')] += 1
+        items = [(count, link) for link, count in wanted.items()]
+        items.sort(reverse=True)
+        return items
 
     def page_backlinks(self, title):
         """Gives a list of pages linking to specified page."""
-        sql = ('SELECT DISTINCT(search_links.src) '
-               'FROM search_links '
-               'WHERE search_links.target=%s '
-               'ORDER BY target')
-        result = self.engine.execute(sql, (title,))
-        for (backlink,) in result:
-            yield unicode(backlink)
+        with self.index.searcher() as searcher:
+            title = title.replace(' ', '%20')
+            sq = query.Prefix("links", title + ':')
+            results = set()
+            for result in searcher.search(sq, limit=8000):
+                results.add(result['title'])
+            return results
 
     def page_links(self, title):
         """Gives a list of links on specified page."""
-        sql = 'SELECT target FROM search_links WHERE src = %s ORDER BY number'
-        result = self.engine.execute(sql, (title,))
-        for (link,) in result:
-            yield unicode(link)
+        return [l[0] for l in self.page_links_and_labels(title)]
 
     def page_links_and_labels(self, title):
-        sql = '''SELECT target, label 
-            FROM search_links 
-            WHERE src = %s 
-            ORDER BY number'''
-        result = self.engine.execute(sql, (title,))
-        for link, label in result:
-            yield unicode(link), unicode(label)
+        with self.index.searcher() as searcher:
+            doc = searcher.document(title=title)
+            if doc:
+                links = doc.get('links', '')
+                for l in links.split():
+                    link, label = l.split(':', 1)
+                    yield link.replace('%20', ' '), label.replace('%20', ' ')
