@@ -427,7 +427,7 @@ class FSManager(object):
             filename_or_fileobj.close()
         return tofile
 
-    def delete(self, path, owner='*', include_history=False):
+    def delete(self, path, owner='*', include_history=False, force_timestamp=None):
         """
         delete a file
         """
@@ -450,7 +450,8 @@ class FSManager(object):
                 hist_inst = history.insert({'path': path, 
                                             'rev': NEXTREV.where(history.c.path==path),
                                             'owner': owner,
-                                            'meta': {'operation': 'del'}
+                                            'meta': {'operation': 'del'},
+                                            'created': force_timestamp or sa.func.now(),
                                            })
                 conn.execute(hist_inst)
             return bool(result)

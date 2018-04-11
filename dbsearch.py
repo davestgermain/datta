@@ -103,7 +103,7 @@ class WikiDBSearch(WikiSearch):
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
         try:
-            with self.istore.open_file('reporev', mode='r') as fp:
+            with self.istore.open_file('reporev') as fp:
                 rev = int(fp.read())
         except:
             rev = -1

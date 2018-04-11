@@ -83,7 +83,7 @@ class WikiStorage(object):
             if title not in self:
                 raise error.ForbiddenErr()
             else:
-                return self.delete_page(title, user, text)
+                return self.delete_page(title, user, text, ts=ts)
         # else:
         #     if other is not None:
         #         try:
@@ -101,7 +101,7 @@ class WikiStorage(object):
             fp.write(data)
 
     def delete_page(self, title, author, comment, ts=None):
-        self.fs.delete(self._path(title), owner=author)
+        self.fs.delete(self._path(title), owner=author, force_timestamp=ts)
 
     def save_text(self, title, text, author=u'', comment=u'', parent=None):
         """Save text as specified page, encoded to charset."""
