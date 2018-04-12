@@ -2,7 +2,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, JSONB, insert
 import io
 import hashlib
-import os.path
+import os.path, os
 import mimetypes
 from collections import defaultdict
 
@@ -367,40 +367,55 @@ class FSManager(object):
         result = self.engine.execute(sa.select([active.c.path]).where(active.c.path == path)).first()
         return bool(result)
 
-    def subdirectories(self, dirname):
+    def subdirectories(self, dirname, delimiter='/'):
         """
         returns the subdirectories off of dirname
         """
         dirname = os.path.normpath(dirname)
-        if not dirname.endswith('/'):
-            dirname += '/'
+        if not dirname.endswith(delimiter):
+            dirname += delimiter
         
-        sql = r"select regexp_replace(path, %s, %s) as sd from fs_files where path like %s"
-        counts = defaultdict(int)
-        for sd, in self.engine.execute(sql, ['{0}(.*)/.*'.format(dirname), r'\1', '{}%'.format(dirname)]):
-            counts[sd] += 1
-        return counts.items()
+        slashcount = dirname.count(delimiter)
+        dirname += '%'
 
-    def listdir(self, dirname, walk=False, owner=None, limit=None, open_files=False, order=None, where=None, cols=None):
-        dirname = os.path.normpath(dirname)
-        if not dirname.endswith('/'):
-            dirname += '/'
+        sql = sa.text(r"select split_part(path, :d, :sc), count(*) from fs_files where path like :p and split_part(path, :d, :sd) != '' group by 1").bindparams(d=delimiter, p=dirname, sc=slashcount + 1, sd=slashcount + 2)
+        counts = []
+        for sd, count in self.engine.execute(sql):
+            counts.append((sd, count))
+        return counts
+
+    def common_prefixes(self, prefix, delimiter):
+        slashcount = prefix.count(delimiter)
+        sql = sa.text(r"select split_part(path, :d, :sc), count(*) from fs_files where path like :p and split_part(path, :d, :sd) != '' group by 1").bindparams(d=delimiter, p=prefix + '%', sc=slashcount + 1, sd=slashcount + 2)
+        counts = []
+        for sd, count in self.engine.execute(sql):
+            counts.append((sd, count))
+        return counts
+
+    def listdir(self, dirname, walk=False, owner=None, limit=None, open_files=False, order=None, where=None, cols=None, delimiter='/'):
+        if delimiter:
+            nd = os.path.normpath(dirname)
+            if dirname.endswith(delimiter) and not nd.endswith(delimiter):
+                nd += delimiter
+
+            dirname = nd
         sql = _file_meta_query(include_data=open_files)
         sql = sql.where(active.c.path.like('{}%'.format(dirname)))
         if where is not None:
             sql = sql.where(where)
-        # if not walk:
-        #     sql = sql.where(active.c.path.notlike('{}%/%'.format(dirname)))
+        if not walk:
+            slashcount = dirname.count(delimiter)
+            endq = sa.text("split_part(fs_files.path, :d, :c) = ''").bindparams(d=delimiter, c=slashcount + 2)
+            sql = sql.where(endq)
+
         if order is not None:
             sql = sql.order_by(order)
         
         if limit is not None:
             sql = sql.limit(limit)
-        numslashes = dirname.count('/') 
+
         with self.engine.begin() as conn:
             for row in conn.execute(sql):
-                if not walk and row.path.count('/') > numslashes:
-                    continue
                 if open_files:
                     data = dict(row)
                     yield VersionedFile(row.path, conn, mode='r', requestor=owner, **row)
@@ -555,7 +570,9 @@ class FSManager(object):
 
 MANAGERS = {}
 
-def get_manager(dsn, debug=False):
+def get_manager(dsn=None, debug=False):
+    if dsn is None:
+        dsn = os.environ['FS_DSN']
     if dsn not in MANAGERS:
         MANAGERS[dsn] = FSManager(dsn, debug=debug)
     return MANAGERS[dsn]
