@@ -173,7 +173,10 @@ class VersionedFile(io.BufferedIOBase):
         else:
             self._buf = io.BytesIO()
             self._consumed = None
-            # self.sha256 = hashlib.sha256()
+            self.hasher = None, None
+
+    def do_hash(self, algo='sha256'):
+        self.hasher = algo, getattr(hashlib, algo)()
 
     @property
     def _hist_data(self):
@@ -200,8 +203,11 @@ class VersionedFile(io.BufferedIOBase):
                 self._buf.seek(0)
             else:
                 data = self._buf.getvalue()
+                if self.hasher[0]:
+                    algo, hasher = self.hasher
+                    hasher.update(data)
+                    self.meta[algo] = hasher.hexdigest()
 
-            # self.meta['sha256'] = self.sha256.hexdigest()
             hist_data = {
                 'data': data,
                 'meta': self.meta,
