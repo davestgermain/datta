@@ -1,5 +1,11 @@
 import importlib
 import os
+import six
+try:
+    from .base import FileNotFoundError
+except ImportError:
+    FileNotFoundError = FileNotFoundError
+
 
 MANAGERS = {}
 

@@ -5,6 +5,8 @@ import datetime
 import time
 import os, os.path
 import thread
+import six
+
 
 # Note: we have to set these before importing Mercurial
 os.environ['HGENCODING'] = 'utf-8'
@@ -12,7 +14,7 @@ os.environ['HGENCODING'] = 'utf-8'
 
 from hatta import error
 from hatta import page
-from datta.fs import get_manager, FileNotFoundError, unicode
+from datta.fs import get_manager, FileNotFoundError
 
 
 class StorageError(Exception):
@@ -114,7 +116,7 @@ class WikiStorage(object):
     def page_text(self, title):
         """Read unicode text of a page."""
         data = self.page_data(title)
-        text = unicode(data, self.charset, 'replace')
+        text = six.text_type(data, self.charset, 'replace')
         return text
 
     def open_page(self, title, mode='r', rev=None, owner='*'):
