@@ -4,7 +4,6 @@
 import datetime
 import time
 import os, os.path
-import thread
 import six
 
 
@@ -56,6 +55,7 @@ class WikiStorage(object):
         self._wiki = path.split('/')[-1]
         self._root = self._path() + '/'
         self.fs.set_perm(self._root, owner='*', perm=['r', 'w', 'd'])
+        self.fs.create_repository(self._root)
         self.repo_path = repo_path
 
     def reopen(self):
@@ -95,9 +95,9 @@ class WikiStorage(object):
 
         with self.open_page(title, mode='w', owner=user) as fp:
             fp.owner = user
-            fp.meta['comment'] = text
+            fp.meta[u'comment'] = text
             if parent_rev:
-                fp.meta['parent'] = parent_rev
+                fp.meta[u'parent'] = parent_rev
             if ts:
                 fp.created = ts
             fp.write(data)
@@ -134,17 +134,17 @@ class WikiStorage(object):
     def page_meta(self, title):
         """Get page's revision, date, last editor and his edit comment."""
         with self.open_page(title) as fp:
-            return fp.rev, fp.modified.replace(tzinfo=None), fp.owner, fp.meta.get('comment', '')
+            return fp.rev, fp.modified.replace(tzinfo=None), fp.owner, fp.meta.get(u'comment', '')
 
     def repo_revision(self):
         """Give the latest revision of the repository."""
-        rev = self.fs.maxrev(self._root)
+        rev = self.fs.repo_rev(self._root)
         return rev
 
     def page_history(self, title):
         """Iterate over the page's history."""
         for row in self.fs.get_meta_history(self._path(title)):
-            yield row.rev, row.created, row.owner, row.meta.get('comment', '')
+            yield row.rev, row.created, row.owner, row.meta.get(u'comment', '')
 
     def page_revision(self, title, rev):
         """Get binary content of the specified revision of the page."""
@@ -163,8 +163,8 @@ class WikiStorage(object):
 
     def history(self):
         """Iterate over the history of entire wiki."""
-        for info in self.fs.get_meta_history(self._root):
-            yield info.path.replace(self._root, '', 1), info.rev, info.created, info.owner or '', info.meta.get('comment', '')
+        for info in self.fs.repo_history(self._root):
+            yield info.path.replace(self._root, '', 1), info.rev, info.created, info.owner or '', info.meta.get(u'comment', '')
 
     def all_pages(self):
         """Iterate over the titles of all pages in the wiki."""
@@ -175,7 +175,7 @@ class WikiStorage(object):
         """
         Return all pages that changed since specified repository revision.
         """
-        for title in self.fs.changes(since=rev, prefix=self._root):
+        for title in self.fs.repo_changed_files(self._root, since=rev):
             yield title.replace(self._root, '', 1)
 
 

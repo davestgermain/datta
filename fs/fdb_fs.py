@@ -4,11 +4,21 @@ import os, os.path
 import hashlib
 import msgpack
 import time, datetime
+import six
+import operator
+
 
 fdb.api_version(510)
 
 CHUNKSIZE = 64 * 1024
 TRANSIZE = 8 * 1024 * 1024
+
+if six.PY2:
+    def to_timestamp(dt):
+        return time.mktime(dt.utctimetuple())
+else:
+    def to_timestamp(dt):
+        return dt.timestamp()
 
 
 class Record(dict):
@@ -23,7 +33,12 @@ class Record(dict):
 
     @classmethod
     def from_bytes(cls, data):
-        obj = cls(**msgpack.unpackb(data, encoding='utf8'))
+        unpacked = {}
+        for k, v in msgpack.unpackb(data, encoding='utf8').items():
+            if not isinstance(k, six.text_type):
+                k = k.decode('utf8')
+            unpacked[k] = v
+        obj = cls(unpacked)
         for k in ('created', 'modified'):
             v = obj.get(k, None)
             if v:
@@ -31,7 +46,10 @@ class Record(dict):
         return obj
 
     def __bytes__(self):
-        return msgpack.packb(self, use_bin_type=True)
+        return msgpack.packb(self, encoding='utf8', use_bin_type=True)
+    
+    to_bytes = __bytes__
+
 
 
 class FSManager(BaseManager):
@@ -42,6 +60,8 @@ class FSManager(BaseManager):
             self.files = fdb.directory.create_or_open(tr, 'fs')
             self.history = fdb.directory.create_or_open(tr, 'hist')
             self.kv = fdb.directory.create_or_open(tr, 'kv')
+            self.repos = fdb.directory.create_or_open(tr, 'repo')
+            self.active_repos = {}
         except:
             tr.cancel()
             raise
@@ -53,16 +73,27 @@ class FSManager(BaseManager):
         return historical metadata for the path.
         if path is a directory, returns metadata for all items in the directory
         """
-        hk = self.make_history_key(path)
-        start = hk[None]
-        end = self.make_history_key(path, end=True)
-        for k, v in self.db.get_range(start, end, reverse=True):
-            key = hk.unpack(k)
-            if len(key) > 1:
-                continue
-            row = Record.from_bytes(v)
-            row.rev = key[0]
-            yield row
+        if not isinstance(path, six.text_type):
+            path = path.decode('utf8')
+        if path.endswith(u'/'):
+            paths = [p['path'] for p in self.listdir(path, walk=True)]
+        else:
+            paths = [path]
+        history = []
+        for path in paths:
+            hk = self.make_history_key(path)
+            start = hk[None]
+            end = self.make_history_key(path, end=True)
+            for k, v in self.db.get_range(start, end, reverse=True):
+                key = hk.unpack(k)
+                if len(key) > 1:
+                    continue
+                # print(path, 'key', key)
+                row = Record.from_bytes(v)
+                row.rev = key[0]
+                history.append(row)
+        history.sort(key=operator.itemgetter(u'created'), reverse=True)
+        return history
 
     def get_file_metadata(self, path, rev, tr=None):
         if tr is None:
@@ -76,23 +107,33 @@ class FSManager(BaseManager):
         else:
             active = Record.from_bytes(bytes(active))
             rev = active.rev if rev is None else rev
-
+        
+        # renamed files have a reference to the old path
+        path = active.pop('path', path)
+        if not isinstance(path, six.text_type):
+            path = path.decode('utf8')
         key = self.make_history_key(path)
 
         start_key = key[rev]
         val = tr[start_key]
+        if not val:
+            # files in the repo have different revs
+            if self._is_in_repo(tr, path):
+                while rev >= 0:
+                    rev -= 1
+                    val = tr[key[rev]]
+                    if val:
+                        break
         if val:
             val = Record.from_bytes(bytes(val))
             val.update(active)
             val.rev = rev
-            return val
-        else:
-            return None
+        return val
 
     def save_file_data(self, path, meta, buf):
         meta['bs'] = CHUNKSIZE
         rev = meta.get('rev', None)
-        meta['created'] = created = meta['created'].timestamp()
+        meta['created'] = created = to_timestamp(meta['created'])
         meta['path'] = path
         tr = self.db.create_transaction()
         try:
@@ -100,23 +141,17 @@ class FSManager(BaseManager):
             if rev is not None:
                 modified = meta['created']
             else:
-                start = self.make_history_key(path)[None]
-                end = self.make_history_key(path, end=True)
-                result = list(tr.get_range(start, end, reverse=True, limit=1))
-                if result:
-                    rev = hist_key.unpack(result[0].key)[0] + 1
-                else:
-                    rev = 0
-                meta['rev'] = rev
+                meta['rev'] = rev = self._get_next_rev(tr, path)
                 modified = time.time()
 
             # now write the chunks
-            hash_algo = meta.get('hash', None)
+            hash_algo = meta.pop('hash', None)
             if hash_algo:
                 hasher = getattr(hashlib, hash_algo)()
             else:
                 hasher = None
             cn = 0
+            written = 0
             while 1:
                 chunk = buf.read(CHUNKSIZE)
                 if not chunk:
@@ -133,14 +168,17 @@ class FSManager(BaseManager):
                     tr = self.db.create_transaction()
                     written = 0
             if hasher:
-                meta[hash_algo] = hasher.hexdigest()
-            val = bytes(Record(**meta))
-            print('writing', hist_key[rev], val)
+                meta['meta'][hash_algo] = hasher.hexdigest()
+            hist = Record(meta)
+            val = hist.to_bytes()
+            # print('writing', hist_key[rev], val)
             tr[hist_key[rev]] = val
-            written = len(val)
+            self._record_repo_history(tr, hist, rev)
+            
+            written += len(val)
 
             # set the active key
-            tr[self.make_file_key(path)] = bytes(Record(created=created, modified=modified, rev=rev))
+            tr[self.make_file_key(path)] = Record(created=created, modified=modified, rev=rev).to_bytes()
         except:
             tr.cancel()
             raise
@@ -154,6 +192,8 @@ class FSManager(BaseManager):
             yield chunk
 
     def make_file_key(self, path):
+        if not isinstance(path, six.text_type):
+            path = path.decode('utf8')
         if path:
             if path[0] == '/':
                 path = path[1:]
@@ -180,7 +220,7 @@ class FSManager(BaseManager):
                 nd += delimiter
 
             dirname = nd
-
+        
         tr = self.db.create_transaction()
         try:
             start = self.make_file_key(dirname).key()[:-1]
@@ -199,12 +239,38 @@ class FSManager(BaseManager):
                 else:
                     if owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
                         continue
-                    yield path, meta
+                    meta.path = path
+                    yield meta
         finally:
             tr.commit().wait()
 
     def rename(self, frompath, topath, owner='*', record_move=True):
-        raise NotImplementedError()
+        frompath = os.path.normpath(frompath)
+        topath = os.path.normpath(topath)
+        if not isinstance(frompath, six.text_type):
+            frompath = frompath.decode('utf8')
+        if not isinstance(topath, six.text_type):
+            topath = topath.decode('utf8')
+        assert frompath in self
+        return self._rename(self.db, frompath, topath, owner=owner, record_move=record_move)
+    
+    @fdb.transactional
+    def _rename(self, tr, frompath, topath, owner='*', record_move=True):
+        self.check_perm(frompath, owner=owner, perm='w', tr=tr)
+        self.check_perm(topath, owner=owner, perm='w', tr=tr)
+        active = self.get_file_metadata(frompath, None)
+        active['path'] = topath
+        if record_move:
+            hist = Record({'path': frompath,
+                          'owner': owner,
+                          'meta': {'operation': 'mv', 'dest': topath}})
+            rev = active.rev + 1
+            tr[self.make_history_key(frompath)[rev]] = hist.to_bytes()
+            self._record_repo_history(tr, hist, rev)
+        tr[self.make_file_key(topath)] = Record(created=to_timestamp(active.created), modified=time.time(), rev=active.rev, path=frompath).to_bytes()
+        del tr[self.make_file_key(frompath)]
+    
+        return 3
 
     def delete(self, path, owner='*', include_history=False, force_timestamp=None):
         """
@@ -230,43 +296,106 @@ class FSManager(BaseManager):
             # record the history of deletion
             rev += 1
             if force_timestamp:
-                created = force_timestamp.timestamp()
+                created = to_timestamp(force_timestamp)
             else:
                 created = time.time()
-            meta = {'path': path, 
+            meta = Record({'path': path, 
                     'owner': owner,
                     'meta': {'operation': 'del'},
                     'created': created,
-                   }
-            tr[self.make_history_key(path)[rev]] = bytes(Record(meta))
+                   })
+            tr[self.make_history_key(path)[rev]] = meta.to_bytes()
+            self._record_repo_history(tr, meta, rev)
             return True
 
-    def maxrev(self, prefix='/'):
-        """
-        return maximum revision for fs, starting at prefix
-        """
-        mr = -1
-        if prefix.startswith('/'):
-            prefix = prefix[1:]
-        prefix = prefix.split('/')[1:] or None
-        start = self.files[prefix].key()[:-1]
-        end = start + b'\xff'
-        for k, v in self.db.get_range(start, end):
-            val = Record.from_bytes(v)
-            if val.rev > mr:
-                mr = val.rev
-        return mr
+    def _get_next_rev(self, tr, path):
+        found = self._is_in_repo(tr, path)
+        if found:
+            # file is in a repository
+            # versions increase on the repository level
+            rev = self._repo_rev(tr, found) + 1
+        else:
+            hist_key = self.make_history_key(path)
+            start = hist_key[None]
+            end = self.make_history_key(path, end=True)
+            result = list(tr.get_range(start, end, reverse=True, limit=1))
+            if result:
+                rev = hist_key.unpack(result[0].key)[0]
+                if rev is None:
+                    rev = 0
+                else:
+                    rev += 1
+            else:
+                rev = 0
+        return rev
 
-    def changes(self, prefix='/', since=0):
-        if prefix.startswith('/'):
-            prefix = prefix[1:]
-        prefix = prefix.split('/')[1:] or None
-        start = self.files[prefix].key()[:-1]
-        end = start + b'\xff'
+    def _is_in_repo(self, tr, path):
+        for repo in self.active_repos:
+            if path.startswith(repo):
+                return self.active_repos[repo]
 
-        for k, v in self.db.get_range(start, end):
-            if Record.from_bytes(v).rev > since:
-                yield '/'.join(('',) + self.files.unpack(k)[0])
+    def _record_repo_history(self, tr, meta, rev):
+        path = meta.path
+        found = self._is_in_repo(tr, path)
+        if found:
+            repokey = found['key']
+            tr[repokey[rev]] = meta.to_bytes()
+            return True
+
+    def create_repository(self, directory):
+        directory = six.text_type(directory)
+        key = self.repos[directory]
+        tr = self.db.create_transaction()
+        rev = -1
+        try:
+            val = tr[key[None]]
+            if not val:
+                tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
+            keyrange = slice(key.key(), self.repos[directory, None].key())
+            self.active_repos[directory] = {'key': key, 'range': keyrange}
+        except:
+            tr.cancel()
+            raise
+        else:
+            tr.commit().wait()
+        
+    def repo_rev(self, repository):
+        """
+        return maximum revision for repository within filesystem
+        """
+        repository = six.text_type(repository)
+        try:
+            found = self.active_repos[repository]
+        except KeyError:
+            raise Exception(repository)
+        else:
+            return self._repo_rev(self.db, found)
+    
+    def _repo_rev(self, tr, found):
+        latest = list(tr.get_range(found['range'].start, found['range'].stop, limit=1, reverse=True))[0]
+        rev = found['key'].unpack(latest.key)[0]
+        if rev is None:
+            rev = -1
+        return rev
+
+    def repo_history(self, repository, since=-1):
+        repository = six.text_type(repository)
+        key = self.repos[repository]
+        start = self.repos[repository][since + 1]
+        end = self.repos[repository, None]
+        for k, v in self.db.get_range(start, end, reverse=True):
+            rev = key.unpack(k)[0]
+            rec = Record.from_bytes(v)
+            rec.rev = rev
+            yield rec
+
+    def repo_changed_files(self, repository, since=-1):
+        seen = set()
+        for rec in self.repo_history(repository, since=since):
+            path = rec['path']
+            if path not in seen:
+                yield path
+                seen.add(path)
 
     def get_data(self, path, owner='*'):
         """
@@ -289,22 +418,20 @@ class FSManager(BaseManager):
         key = self.kv[path]
         if not isinstance(data, dict):
             data = {'__value': data}
-        val = bytes(Record(data))
-        tr = self.db.create_transaction()
-        try:
-            tr[key] = val
-        except:
-            tr.cancel()
-            raise
-        else:
-            tr.commit().wait()
+        val = Record(data).to_bytes()
+        self._set_data(self.db, key, val)
+
+    @fdb.transactional
+    def _set_data(self, tr, key, data):
+        tr[key] = data
 
     def check_perm(self, path, owner, perm='r', raise_exception=True, tr=None):
         # raise NotImplementedError()
         return True
 
     def set_perm(self, path, owner, perm='r'):
-        raise NotImplementedError()
+        # raise NotImplementedError()
+        return True
 
     def clear_perm(self, path, owner, perm):
         raise NotImplementedError()

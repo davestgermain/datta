@@ -17,6 +17,17 @@ except NameError:
     class FileError(IOError):
         pass
 
+try:
+    abc.ABC
+except AttributeError:
+    class ABC(object):
+        __metaclass__ = abc.ABCMeta
+        """Helper class that provides a standard way to create an ABC using
+        inheritance.
+        """
+        pass
+    abc.ABC = ABC
+
 
 class BaseManager(abc.ABC):
     def __init__(self, dsn='', debug=False):
@@ -127,17 +138,35 @@ class BaseManager(abc.ABC):
     @abc.abstractmethod
     def clear_perm(self, path, owner, perm):
         pass
-        return self.engine.execute(perms.delete().where(perms.c.path == path).where(perms.c.owner == owner).where(perms.c.perm == perm))
+
+    def rmtree(self, directory, include_history=False):
+        """
+        Removes every file under directory
+        """
+        for obj in self.listdir(directory, walk=True):
+            self.delete(obj.path, include_history=include_history)
+
+    def create_repository(self, directory):
+        """
+        Create a 'repository' at directory. 
+        The backend should use this call to create indexes for efficient
+        version lookups.
+        """
+        pass
 
     @abc.abstractmethod
-    def maxrev(self, prefix='/'):
+    def repo_rev(self, repository):
         """
         return maximum revision for fs, starting at prefix
         """
         pass
 
     @abc.abstractmethod
-    def changes(self, prefix='/', since=0):
+    def repo_changed_files(self, repository, since=0):
+        pass
+
+    @abc.abstractmethod
+    def repo_history(self, repository, since=0):
         pass
 
     def get_data(self, path, owner='*'):
@@ -195,12 +224,11 @@ class VersionedFile(io.BufferedIOBase):
         self._chunks = None
         if kwargs:
             self.update(kwargs)
+        self._buf = io.BytesIO()
         if mode == 'r':
-            self._buf = io.BytesIO()
             self._consumed = 0
             self._chunks = self.get_chunks()
         else:
-            self._buf = io.BytesIO()
             self._consumed = None
             self.hash = None
 
@@ -208,6 +236,8 @@ class VersionedFile(io.BufferedIOBase):
         self.hash = algo
 
     def close(self):
+        if self.closed:
+            return
         if self.writable():
             self._buf.seek(0, 2)
             length = self.length = self._buf.tell()

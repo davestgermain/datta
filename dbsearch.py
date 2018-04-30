@@ -27,7 +27,7 @@ class DBStorage(Storage):
         return os.path.join(self.prefix, name)
 
     def create_file(self, name, mode='w'):
-        return self.open_file(name, mode='w')
+        return self.open_file(unicode(name), mode='w')
 
     def delete_file(self, name):
         self.fs.delete(self._topath(name), include_history=True)
@@ -88,11 +88,11 @@ class WikiDBSearch(WikiSearch):
             self.split_text = self.split_japanese_text
         self.schema = fields.Schema(links=fields.KEYWORD(stored=True), title=fields.ID(stored=True, unique=True), content=fields.TEXT, has_links=fields.BOOLEAN, wanted=fields.KEYWORD(stored=True))
         
-        ipath = os.path.join(cache_path, 'search')
-        if not os.path.exists(ipath):
-            os.makedirs(ipath)
-        self.istore = FileStorage(ipath)
-        # self.istore = DBStorage(self.fs, os.path.join('/.meta/', storage._wiki, 'search/'))
+        # ipath = os.path.join(cache_path, 'search')
+        # if not os.path.exists(ipath):
+        #     os.makedirs(ipath)
+        # self.istore = FileStorage(ipath)
+        self.istore = DBStorage(self.fs, os.path.join('/.meta/', storage._wiki, 'search/'))
         
         if self.istore.index_exists():
             self.index = self.istore.open_index()
@@ -132,6 +132,7 @@ class WikiDBSearch(WikiSearch):
         else:
             changed = self.storage.changed_since(last_rev)
         changed = list(changed)
+        print('changed', changed, last_rev)
         if changed:
             self.reindex(wiki, changed)
             # if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:

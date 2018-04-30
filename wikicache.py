@@ -137,14 +137,14 @@ class DBCacheManager(CacheManager):
     def __getitem__(self, url):
         path = self._path(url)
         try:
-            with self.fs.open(path, mode='r', owner='cache') as fp:
-                exp = fp.meta['exp']
+            with self.fs.open(path, mode=u'r', owner=u'cache') as fp:
+                exp = fp.meta[u'exp']
                 if exp >= time.time():
                     resp = cPickle.load(fp)
                     self._stats['h'] += 1
                     return resp
                 else:
-                    self.fs.delete(path, owner='cache', include_history=True)
+                    self.fs.delete(path, owner=u'cache', include_history=True)
         except Exception:
             pass
         self._stats['m'] += 1
@@ -152,12 +152,12 @@ class DBCacheManager(CacheManager):
     def __setitem__(self, url, val):
         response, exp = val
         path = self._path(url)
-        with self.fs.open(path, mode='w', owner='cache') as fp:
-            fp.meta['exp'] = exp
+        with self.fs.open(path, mode=u'w', owner=u'cache') as fp:
+            fp.meta[u'exp'] = exp
             cPickle.dump(response, fp)
     
     def __delitem__(self, url):
-        self.fs.delete(self._path(url), owner='cache', include_history=True)
+        self.fs.delete(self._path(url), owner=u'cache', include_history=True)
     
     def clear(self, url):
         for i in self.fs.listdir('/+cache/'):

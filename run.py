@@ -5,6 +5,8 @@ from datta import dbstorage, dbsearch
 
 dsn = 'cockroachdb://root@localhost:26257/wiki?sslcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.crt&sslkey=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.key&sslmode=verify-full&sslrootcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fca.crt'
 
+dsn = 'fdb'
+
 config = WikiConfig(
     repo_path=dsn,
     pages_path='/false-dilemma',
@@ -19,14 +21,14 @@ config2 = WikiConfig(
 )
 
 config.set('cache_manager', 'db')
-#
-# Wiki.storage_class = dbstorage.WikiStorage
-# Wiki.index_class = dbsearch.WikiDBSearch
-# wikiapp = Wiki(config2).application
 
-wiki = MultiWiki(config)
-wiki.add_domain(['localhost', 'om.paragate.club'], 'false dilemma')
-wikiapp = wiki.application
+Wiki.storage_class = dbstorage.WikiStorage
+Wiki.index_class = dbsearch.WikiDBSearch
+wikiapp = Wiki(config).application
+
+# wiki = MultiWiki(config)
+# wiki.add_domain(['localhost', 'om.paragate.club'], 'false dilemma')
+# wikiapp = wiki.application
 # wikicache.CachedWiki.storage_class = dbstorage.WikiStorage
 # wikicache.CachedWiki.index_class = dbsearch.WikiDBSearch
 # wikiapp = wikicache.CachedWiki(config).application
