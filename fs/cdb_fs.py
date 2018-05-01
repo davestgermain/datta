@@ -105,6 +105,7 @@ class FSManager(BaseManager):
 
     def get_file_metadata(self, path, rev):
         result = self.engine.execute(_file_meta_query(rev=rev).where(active.c.path == path)).first()
+        result.bs = CHUNKSIZE
         return result
     
     def save_file_data(self, path, meta, buf):
@@ -320,17 +321,17 @@ class FSManager(BaseManager):
     def clear_perm(self, path, owner, perm):
         return self.engine.execute(perms.delete().where(perms.c.path == path).where(perms.c.owner == owner).where(perms.c.perm == perm))
 
-    def maxrev(self, prefix='/'):
+    def repo_rev(self, repository):
         """
         return maximum revision for fs, starting at prefix
         """
-        sql = sa.select([sa.func.max(history.c.rev)]).where(history.c.path.like(prefix + '%'))
+        sql = sa.select([sa.func.max(history.c.rev)]).where(history.c.path.like(repository + '%'))
         result = self.engine.execute(sql).first()[0]
         if result is None:
             result = -1
         return result
 
-    def changes(self, prefix='/', since=0):
+    def repo_changes(self, prefix='/', since=0):
         sql = sa.select([history.c.path]).where(history.c.path.like(prefix + '%')).where(history.c.rev > since).order_by(sa.desc(history.c.created))
         for row in self.engine.execute(sql):
             yield row[0]

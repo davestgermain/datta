@@ -148,7 +148,7 @@ class BaseManager(abc.ABC):
 
     def create_repository(self, directory):
         """
-        Create a 'repository' at directory. 
+        Create a 'repository' at directory.
         The backend should use this call to create indexes for efficient
         version lookups.
         """
@@ -210,6 +210,7 @@ class VersionedFile(io.BufferedIOBase):
         self.meta = meta or {}
         self.mode = mode
         self.length = 0
+        self.bs = 8192
         self.manager = manager
         val = manager.get_file_metadata(filename, rev)
         if val:
@@ -224,12 +225,16 @@ class VersionedFile(io.BufferedIOBase):
         self._chunks = None
         if kwargs:
             self.update(kwargs)
-        self._buf = io.BytesIO()
+        self._pos = 0
         if mode == 'r':
-            self._consumed = 0
-            self._chunks = self.get_chunks()
+            if self.data:
+                self._curr_chunk = self.data
+                self._curr_chunk_num = 0
+            else:
+                self._curr_chunk_num = None
+                self._curr_chunk = None
         else:
-            self._consumed = None
+            self._buf = io.BytesIO()
             self.hash = None
 
     def do_hash(self, algo='sha256'):
@@ -263,26 +268,8 @@ class VersionedFile(io.BufferedIOBase):
             self.manager.save_file_data(self.path, hist_data, self._buf)
 
             self._buf = None
-        else:
-            self._buf.close()
         self.mode = None
         io.BufferedIOBase.close(self)
-
-    def get_chunks(self):
-        if self.data is not None:
-            pos = self._buf.tell()
-            self._buf.seek(0, 2)
-            self._buf.write(self.data)
-            yield len(self.data)
-        else:
-            for chunk in self.manager.get_file_chunks(self.path, self.rev):
-                pos = self._buf.tell()
-                self._buf.seek(0, 2)
-                self._buf.write(chunk)
-                cr = len(chunk)
-                self._consumed += cr
-                self._buf.seek(pos)
-                yield cr
 
     def readable(self):
         return self.mode == 'r'
@@ -290,29 +277,59 @@ class VersionedFile(io.BufferedIOBase):
     def writable(self):
         return self.mode == 'w'
 
-    def consume(self, size):
-        if not self._chunks:
-            return
-        cr = 0
-        while cr < size:
-            try:
-                cr += next(self._chunks)
-            except StopIteration:
-                self._chunks = None
-                break
+    def seekable(self):
+        return True
+
+    def tell(self):
+        if self.readable():
+            return self._pos
+        else:
+            return self._buf.tell()
+
+    def seek(self, pos, whence=0):
+        if self.mode == 'r':
+            curpos = self._pos
+            if whence == 0:
+                abspos = pos
+            elif whence == 1:
+                abspos = curpos + pos
+            elif whence == 2:
+                abspos = self.length + pos
+            self._pos = abspos
+            return self._pos
+        elif self.mode == 'w':
+            return self._buf.seek(pos, whence)
 
     def read(self, size=-1):
-        if not self.readable():
+        if self.mode != 'r':
             return
-        data = self._buf.read(size)
-        dr = len(data)
+        if self._pos == 0 and size == -1:
+            # optimization for reading the whole file
+            buf = b''
+            for chunk in self.manager.get_file_chunks(self.path, self.rev):
+                buf += chunk
+            self._pos = len(buf)
+            return buf
+
         length = size if size > 0 else self.length
-        if self._chunks and dr < length:
-            self.consume(length)
-            self._buf.seek(-dr, 1)
-            return self.read(size)
-        else:
-            return data
+        buf = b''
+        where, pos = divmod(self._pos, self.bs)
+
+        if self._curr_chunk_num != where:
+            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where)
+            self._curr_chunk_num = where
+        buf += self._curr_chunk[pos:]
+        while len(buf) < length:
+            where += 1
+            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where)
+            if self._curr_chunk is None:
+                self._curr_chunk_num = None
+                break
+            buf += self._curr_chunk
+            self._curr_chunk_num = where
+        read = buf[:length]
+        self._pos += len(read)
+        return read
 
     def readall(self):
         return self.read()
@@ -336,23 +353,4 @@ class VersionedFile(io.BufferedIOBase):
                 v = datetime.datetime.utcfromtimestamp(v)
             setattr(self, k, v)
 
-    def seekable(self):
-        return True
-
-    def tell(self):
-        return self._buf.tell()
-
-    def seek(self, pos, whence=0):
-        if self.readable():
-            curpos = self._buf.tell()
-            if whence == 0:
-                abspos = pos
-            elif whence == 1:
-                abspos = curpos + pos
-            elif whence == 2:
-                abspos = self.length + pos
-            if abspos > self._consumed:
-                self.consume(abspos - curpos)
-                self._buf.seek(curpos)
-        return self._buf.seek(pos, whence)
 

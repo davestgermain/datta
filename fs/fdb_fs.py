@@ -88,7 +88,6 @@ class FSManager(BaseManager):
                 key = hk.unpack(k)
                 if len(key) > 1:
                     continue
-                # print(path, 'key', key)
                 row = Record.from_bytes(v)
                 row.rev = key[0]
                 history.append(row)
@@ -164,14 +163,14 @@ class FSManager(BaseManager):
                 # transactions can't be too big
                 if written >= TRANSIZE:
                     tr.commit().wait()
-                    print('starting new transaction')
+                    six.print_('starting new transaction')
                     tr = self.db.create_transaction()
                     written = 0
             if hasher:
                 meta['meta'][hash_algo] = hasher.hexdigest()
             hist = Record(meta)
             val = hist.to_bytes()
-            # print('writing', hist_key[rev], val)
+
             tr[hist_key[rev]] = val
             self._record_repo_history(tr, hist, rev)
             
@@ -183,13 +182,16 @@ class FSManager(BaseManager):
             tr.cancel()
             raise
         else:
+            # six.print_('SAVED', path, meta['length'])
             tr.commit().wait()
 
-    def get_file_chunks(self, path, rev):
+    def get_file_chunks(self, path, rev, chunk=None):
         key = self.make_history_key(path)
         tr = self.db
-        for k, chunk in tr.get_range(key[rev][0], key[rev + 1]):
-            yield chunk
+        if chunk is None:
+            return (i.value for i in tr.get_range(key[rev][0], key[rev + 1]))
+        else:
+            return tr[key[rev][chunk]]
 
     def make_file_key(self, path):
         if not isinstance(path, six.text_type):
@@ -244,6 +246,25 @@ class FSManager(BaseManager):
         finally:
             tr.commit().wait()
 
+    def rmtree(self, directory, include_history=False):
+        if not isinstance(directory, six.text_type):
+            directory = directory.decode('utf8')
+
+        tr = self.db.create_transaction()
+        try:
+            start = self.make_file_key(directory).key()[:-1]
+            end = start + b'\xff'
+            if include_history:
+                for i in tr[start:end]:
+                    path = u'/' + u'/'.join(self.files.unpack(i.key)[0])
+                    del tr[self.make_history_key(path).range()]
+            del tr[start:end]
+        except:
+            tr.cancel()
+            raise
+        else:
+            tr.commit().wait()
+
     def rename(self, frompath, topath, owner='*', record_move=True):
         frompath = os.path.normpath(frompath)
         topath = os.path.normpath(topath)
@@ -269,7 +290,7 @@ class FSManager(BaseManager):
             self._record_repo_history(tr, hist, rev)
         tr[self.make_file_key(topath)] = Record(created=to_timestamp(active.created), modified=time.time(), rev=active.rev, path=frompath).to_bytes()
         del tr[self.make_file_key(frompath)]
-    
+
         return 3
 
     def delete(self, path, owner='*', include_history=False, force_timestamp=None):
@@ -284,7 +305,7 @@ class FSManager(BaseManager):
         self.check_perm(path, owner=owner, perm='d', tr=tr)
         fk = self.make_file_key(path)
         val = tr[fk]
-        if val:
+        if val.value:
             rev = Record.from_bytes(val.value).rev
             del tr[fk]
         else:
@@ -335,8 +356,7 @@ class FSManager(BaseManager):
                 return self.active_repos[repo]
 
     def _record_repo_history(self, tr, meta, rev):
-        path = meta.path
-        found = self._is_in_repo(tr, path)
+        found = self._is_in_repo(tr, meta.path)
         if found:
             repokey = found['key']
             tr[repokey[rev]] = meta.to_bytes()

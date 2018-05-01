@@ -140,7 +140,7 @@ class DBCacheManager(CacheManager):
             with self.fs.open(path, mode=u'r', owner=u'cache') as fp:
                 exp = fp.meta[u'exp']
                 if exp >= time.time():
-                    resp = cPickle.load(fp)
+                    resp = cPickle.loads(fp.read())
                     self._stats['h'] += 1
                     return resp
                 else:

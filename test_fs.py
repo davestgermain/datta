@@ -1,6 +1,8 @@
 from datta import fs
 import unittest
 import time
+import os
+import io
 
 
 def test_get_default_manager():
@@ -12,9 +14,8 @@ class FDBTests(unittest.TestCase):
         self.man = fs.get_manager('fdb')
     
     def tearDown(self):
-        for data in self.man.listdir('/test/', walk=True):
-            self.man.delete(data.path, include_history=True)
-    
+        self.man.rmtree('/test/', include_history=True)
+
     def test_read_missing(self):
         self.assertRaises(FileNotFoundError, self.man.open, '/test/missing/file', mode='r')
 
@@ -42,3 +43,30 @@ class FDBTests(unittest.TestCase):
         self.man.rename(fname, toname)
         renamed = self.man.open(toname, mode='r')
         self.assertEquals(renamed.meta['testing'], ts)
+    
+    def test_random_read(self):
+        fname = '/test/randomread'
+        data = os.urandom(100*1024)
+        with self.man.open(fname, mode='w') as fp:
+            fp.write(data)
+            fp.meta['testing'] = True
+        
+        comp = io.BytesIO(data)
+        fp = self.man.open(fname)
+        operations = [
+            (1000, 0, 1),
+            (1000, 1, 100),
+            (67 * 1024, 0, 4),
+            (-5, 2, 4),
+            (-5, 2, 5),
+            (63*1024, 0, 1028),
+        ]
+        while operations:
+            seek, whence, read = operations.pop(0)
+            fp.seek(seek, whence)
+            comp.seek(seek, whence)
+            self.assertEqual(fp.read(read), comp.read(read))
+
+
+
+        

@@ -68,7 +68,7 @@ class DBStorage(Storage):
         return self.locks[name]
 
     def temp_storage(self, name=None):
-        name = name or ('temp%d' % time.time())
+        name = name or (u'temp%d' % time.time())
         prefix = os.path.join(os.path.dirname(self.prefix), name)
         return DBStorage(self.fs, prefix)
 
@@ -92,7 +92,7 @@ class WikiDBSearch(WikiSearch):
         # if not os.path.exists(ipath):
         #     os.makedirs(ipath)
         # self.istore = FileStorage(ipath)
-        self.istore = DBStorage(self.fs, os.path.join('/.meta/', storage._wiki, 'search/'))
+        self.istore = DBStorage(self.fs, os.path.join(u'/.meta/', storage._wiki, u'search/'))
         
         if self.istore.index_exists():
             self.index = self.istore.open_index()

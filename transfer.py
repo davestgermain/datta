@@ -7,8 +7,7 @@ import sys
 import time
 import datetime
 import six
-# if six.PY2:
-#     from __future__ import print_statement
+
 
 
 mstore = hatta.storage.WikiStorage(sys.argv[1])
@@ -26,11 +25,11 @@ for title, rev, dt, author, comment in history:
     content = mstore.page_revision(title, rev)
     ts = dt.replace(tzinfo=utc())
     if rev == -1:
-        print('\tDELETE')
+        six.print_('\tDELETE')
         dbstore.delete_page(title, author, comment, ts=ts)
     else:
         dbstore.save_data(title, content, author=author, comment=comment, ts=ts)
-    print(title, rev)
+    six.print_(title, rev)
 
 wiki = wikicache.CachedWiki(hatta.WikiConfig())
 wiki.storage = dbstore
