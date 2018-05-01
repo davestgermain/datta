@@ -118,11 +118,10 @@ class FSManager(BaseManager):
         if not val:
             # files in the repo have different revs
             if self._is_in_repo(tr, path):
-                while rev >= 0:
-                    rev -= 1
+                lastkey = tr.get_key(fdb.KeySelector.last_less_or_equal(start_key))
+                if key.contains(lastkey):
+                    rev = key.unpack(lastkey)[0]
                     val = tr[key[rev]]
-                    if val:
-                        break
         if val:
             val = Record.from_bytes(bytes(val))
             val.update(active)

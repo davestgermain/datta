@@ -124,6 +124,8 @@ class WikiStorage(object):
         try:
             return self.fs.open(self._path(title), owner=owner, mode=mode, rev=rev)
         except FileNotFoundError:
+            if rev is not None:
+                raise
             raise error.NotFoundErr()
 
     def page_data(self, title):
@@ -148,8 +150,11 @@ class WikiStorage(object):
 
     def page_revision(self, title, rev):
         """Get binary content of the specified revision of the page."""
-        with self.open_page(title, rev=rev) as fp:
-            return fp.read()
+        try:
+            with self.open_page(title, rev=rev) as fp:
+                return fp.read()
+        except FileNotFoundError:
+            return b''
 
     def revision_text(self, title, rev):
         """Get unicode text of the specified revision of the page."""

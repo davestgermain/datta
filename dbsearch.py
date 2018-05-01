@@ -1,4 +1,4 @@
-from hatta.search import WikiSearch
+# from hatta.search import WikiSearch
 import hatta
 import threading
 import os.path, os
@@ -8,6 +8,7 @@ from whoosh import index, fields, query
 from whoosh.qparser import QueryParser
 from whoosh.filedb.filestore import Storage, FileStorage
 from whoosh.filedb.structfile import StructFile
+import six
 try:
     import cPickle as pickle
 except ImportError:
@@ -77,7 +78,7 @@ class DBStorage(Storage):
             self.fs.delete(f.path, include_history=True)
 
 
-class WikiDBSearch(WikiSearch):
+class WikiDBSearch(object):
     INDEX_THREAD = None
 
     def __init__(self, cache_path, lang, storage):
@@ -132,7 +133,7 @@ class WikiDBSearch(WikiSearch):
         else:
             changed = self.storage.changed_since(last_rev)
         changed = list(changed)
-        print('changed', changed, last_rev)
+        six.print_('changed', changed, last_rev)
         if changed:
             self.reindex(wiki, changed)
             # if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
