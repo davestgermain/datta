@@ -18,6 +18,10 @@ def main():
     cat_parser = subparsers.add_parser('cat', help='cat a file')
     cat_parser.add_argument('-v', dest='version', type=int, help='version to open', default=None)
     cat_parser.add_argument('path', help='path')
+
+    pipe_parser = subparsers.add_parser('pipe', help='pipe STDIN to a file')
+    # pipe_parser.add_argument('-v', dest='version', type=int, help='version to open', default=None)
+    pipe_parser.add_argument('path', help='path')
     
     cp_parser = subparsers.add_parser('cp', help='copy a file')
     cp_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
@@ -28,6 +32,11 @@ def main():
     rm_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
     rm_parser.add_argument('-f', action='store_true', default=False, dest='history', help='include history')
     rm_parser.add_argument('path', help='path')
+
+    mv_parser = subparsers.add_parser('mv', help='move a file')
+    # mv_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
+    mv_parser.add_argument('frompath', help='from path')
+    mv_parser.add_argument('topath', help='to path')
 
     log_parser = subparsers.add_parser('log', help='show history of file')
     # log_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
@@ -42,17 +51,18 @@ def main():
         templ = '{path:48}\t{length:8}\t{created:26}\t{modified:26}'
         kwargs = dict(path='Path', length='Size', created='Created', modified='Modified')
         if args.detail:
-            templ += '\t{rev:6}\t{meta}'
-            kwargs.update({'rev': 'Rev', 'meta': 'Meta'})
+            templ += '\t{rev:4}\t{content_type:20}\t{meta}'
+            kwargs.update({'rev': 'Rev', 'meta': 'Meta', 'content_type': 'Content-Type'})
         row = templ.format(**kwargs)
-        six.print_ed = False
+        printed = False
+        timeformat = '%Y-%m-%d %H:%M:%S'
         for p in man.listdir(args.path, walk=args.recurse):
-            if not six.print_ed:
+            if not printed:
                 six.print_(row)
                 six.print_('=' * (len(row) +32))
-                six.print_ed = True
-            p['created'] = str(p.created)
-            p['modified'] = str(p.modified)
+                printed = True
+            p['created'] = p.created.strftime(timeformat)
+            p['modified'] = p.modified.strftime(timeformat)
             row = templ.format(**p)
             six.print_(row)
     elif args.command == 'cat':
@@ -70,6 +80,16 @@ def main():
                         break
                     os.write(fn, block)
                 sys.stdout.flush()
+    elif args.command == 'pipe':
+        import mimetypes
+        fn = sys.stdin.fileno()
+        with man.open(args.path, mode='w') as fp:
+            fp.content_type = mimetypes.guess_type(args.path)[0]
+            while 1:
+                block = os.read(fn, 8192)
+                if not block:
+                    break
+                fp.write(block)
     elif args.command == 'cp':
         if args.recurse:
             return man.copydir(args.frompath, args.topath)
@@ -103,6 +123,9 @@ def main():
         else:
             if not man.delete(args.path, include_history=args.history):
                 return -1
+    elif args.command == 'mv':
+        if not man.rename(args.frompath, args.topath):
+            return -1
     elif args.command == 'log':
         row = '{rev:8}\t{length:8}\t{owner:20}\t{created:26}\t{meta}'
         six.print_(row.format(rev='Rev', length='Size', owner='Owner', created='Created', meta='Meta'))
@@ -118,7 +141,7 @@ def main():
                 info['length'] = 0
             six.print_(row.format(**info))
     else:
-        parser.six.print__help()
+        parser.print_help()
 
 if __name__ == '__main__':
     sys.exit(main())
