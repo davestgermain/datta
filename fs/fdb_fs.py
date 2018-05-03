@@ -6,6 +6,7 @@ import msgpack
 import time, datetime
 import six
 import operator
+import collections
 
 
 fdb.api_version(510)
@@ -443,6 +444,20 @@ class FSManager(BaseManager):
     @fdb.transactional
     def _set_data(self, tr, key, data):
         tr[key] = data
+
+    def common_prefixes(self, prefix, delimiter):
+        start = self.make_file_key(prefix).key()[:-1]
+        end = start + b'\xff'
+
+        nc = prefix.count(delimiter)
+        pref = collections.defaultdict(int)
+        for k, v in self.db.get_range(start, end):
+            k = self.files.unpack(k)[0]
+            path = '/' + '/'.join(k)
+            path = path.replace(prefix, '', 1)
+            if path.count(delimiter) > 0:
+                pref[path.split(delimiter)[0]] += 1
+        return pref.items()
 
     def check_perm(self, path, owner, perm='r', raise_exception=True, tr=None):
         # raise NotImplementedError()

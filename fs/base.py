@@ -222,7 +222,6 @@ class VersionedFile(io.BufferedIOBase):
         elif mode == 'w':
             self.owner = requestor 
 
-        self._chunks = None
         if kwargs:
             self.update(kwargs)
         self._pos = 0
