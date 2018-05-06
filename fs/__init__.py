@@ -5,6 +5,7 @@ try:
     from .base import FileNotFoundError
 except ImportError:
     FileNotFoundError = FileNotFoundError
+    PermissionError = PermissionError
 
 
 MANAGERS = {}

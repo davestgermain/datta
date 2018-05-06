@@ -12,21 +12,23 @@ def test_get_default_manager():
 class FDBTests(unittest.TestCase):
     def setUp(self):
         self.man = fs.get_manager('fdb')
-    
+        self.man.set_perm('/test', 'test', 'rwd')
+
     def tearDown(self):
         self.man.rmtree('/test/', include_history=True)
+        self.man.clear_perm('/test', 'test', 'rwd')
 
     def test_read_missing(self):
-        self.assertRaises(FileNotFoundError, self.man.open, '/test/missing/file', mode='r')
+        self.assertRaises(FileNotFoundError, self.man.open, '/test/missing/file', mode='r', owner='test')
 
     def test_create_file(self):
         data = 'test 123'
-        fp = self.man.open('/test/create', mode='w')
+        fp = self.man.open('/test/create', owner='test', mode='w')
         fp.write(data)
         fp.meta['testing'] = True
         fp.close()
         
-        read = self.man.open('/test/create', mode='r')
+        read = self.man.open('/test/create', owner='test', mode='r')
         self.assertEquals(read.rev, 0)
         self.assertEquals(data.encode('utf8'), read.read())
         self.assertTrue(fp.meta['testing'])
@@ -37,22 +39,22 @@ class FDBTests(unittest.TestCase):
         fname = '/test/file1'
         toname = '/test/renamed'
         ts = time.time()
-        created = self.man.open(fname, mode='w')
+        created = self.man.open(fname, owner='test', mode='w')
         created.meta['testing'] = ts
         created.close()
-        self.man.rename(fname, toname)
-        renamed = self.man.open(toname, mode='r')
+        self.man.rename(fname, toname, owner='test')
+        renamed = self.man.open(toname, owner='test', mode='r')
         self.assertEquals(renamed.meta['testing'], ts)
     
     def test_random_read(self):
         fname = '/test/randomread'
         data = os.urandom(100*1024)
-        with self.man.open(fname, mode='w') as fp:
+        with self.man.open(fname, mode='w', owner='test') as fp:
             fp.write(data)
             fp.meta['testing'] = True
         
         comp = io.BytesIO(data)
-        fp = self.man.open(fname)
+        fp = self.man.open(fname, owner='test')
         operations = [
             (1000, 0, 1),
             (1000, 1, 100),
@@ -67,6 +69,24 @@ class FDBTests(unittest.TestCase):
             comp.seek(seek, whence)
             self.assertEqual(fp.read(read), comp.read(read))
 
+    def test_perms(self):
+        self.man.clear_perm('/test/public/filename', '*', 'rwd')
+        self.man.clear_perm('/test/public', '*', 'rwd')
+        self.man.set_perm('/test/', 'test', 'r')
+        self.assertTrue(self.man.check_perm('/test/', 'test', 'r', raise_exception=False))
+        self.assertRaises(fs.PermissionError, self.man.check_perm, '/test/', 'badguy', 'r')
+        self.assertTrue(self.man.check_perm('/test/foo', 'test', 'r', raise_exception=False))
+        self.man.set_perm('/test/public', '*', 'r')
+        self.assertTrue(self.man.check_perm('/test/public/filename', 'foo', 'r', raise_exception=False))
+        self.assertFalse(self.man.check_perm('/test/public/filename', 'foo', 'w', raise_exception=False))
+        self.man.set_perm('/test/public/filename', '*', 'w')
+        self.assertTrue(self.man.check_perm('/test/public/filename', 'foo', 'w', raise_exception=False))
 
-
-        
+    def test_kv(self):
+        self.man['testkey'] = 1
+        self.assertEquals(self.man['testkey'], 1)
+        del self.man['testkey']
+        self.assertEquals(self.man['testkey'], None)
+        self.man['testkey'] = {'complex': True, 'Structure': [1,2,3], 'val': -1.3}
+        self.assertEquals(self.man['testkey']['val'], -1.3)
+        del self.man['testkey']

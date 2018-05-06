@@ -1,4 +1,4 @@
-from .base import BaseManager
+from .base import BaseManager, Record, PermissionError
 import fdb
 import os, os.path
 import hashlib
@@ -22,36 +22,6 @@ else:
         return dt.timestamp()
 
 
-class Record(dict):
-    def __getattr__(self, key):
-        try:
-            return self[key]
-        except KeyError:
-            raise AttributeError(key)
-
-    def __setattr__(self, key, value):
-        self[key] = value
-
-    @classmethod
-    def from_bytes(cls, data):
-        unpacked = {}
-        for k, v in msgpack.unpackb(data, encoding='utf8').items():
-            if not isinstance(k, six.text_type):
-                k = k.decode('utf8')
-            unpacked[k] = v
-        obj = cls(unpacked)
-        for k in ('created', 'modified'):
-            v = obj.get(k, None)
-            if v:
-                obj[k] = datetime.datetime.utcfromtimestamp(v)
-        return obj
-
-    def __bytes__(self):
-        return msgpack.packb(self, encoding='utf8', use_bin_type=True)
-    
-    to_bytes = as_foundationdb_value = __bytes__
-
-
 
 class FSManager(BaseManager):
     def _setup(self):
@@ -62,6 +32,7 @@ class FSManager(BaseManager):
             self.history = fdb.directory.create_or_open(tr, 'hist')
             self.kv = fdb.directory.create_or_open(tr, 'kv')
             self.repos = fdb.directory.create_or_open(tr, 'repo')
+            self.perms = fdb.directory.create_or_open(tr, 'perms')
             self.active_repos = {}
         except:
             tr.cancel()
@@ -417,7 +388,7 @@ class FSManager(BaseManager):
                 yield path
                 seen.add(path)
 
-    def get_data(self, path, owner='*'):
+    def __getitem__(self, path):
         """
         gets the stored data
         """
@@ -431,15 +402,18 @@ class FSManager(BaseManager):
         else:
             return None
 
-    def set_data(self, path, data, owner='*'):
+    def __setitem__(self, path, data):
         """
         sets the data as a msgpack string
         """
         key = self.kv[path]
         if not isinstance(data, dict):
             data = {'__value': data}
-        val = Record(data).to_bytes()
+        val = Record(data)
         self._set_data(self.db, key, val)
+
+    def __delitem__(self, path):
+        del self.db[self.kv[path]]
 
     @fdb.transactional
     def _set_data(self, tr, key, data):
@@ -459,13 +433,34 @@ class FSManager(BaseManager):
                 pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
-    def check_perm(self, path, owner, perm='r', raise_exception=True, tr=None):
-        # raise NotImplementedError()
-        return True
+    def check_perm(self, path, owner, perm=u'r', raise_exception=True, tr=None):
+        tr = tr or self.db
+        pars = [owner, perm]
+        upars = ['*', perm]
+        sp = path.split('/')
+        while sp:
+            key = self.perms[pars + sp]
+            if tr[key] == b'':
+                return True
+            key = self.perms[upars + sp]
+            if tr[key] == b'':
+                return True
+            sp.pop(-1)
+        if raise_exception:
+            raise PermissionError((owner, perm))
+        else:
+            return False
 
-    def set_perm(self, path, owner, perm='r'):
-        # raise NotImplementedError()
+    def set_perm(self, path, owner, perm=u'r'):
+        sp = path.split('/')
+        for p in perm:
+            pars = [owner, p]
+            pars.extend(sp)
+            key = self.perms[pars]
+            self.db[key] = b''
         return True
 
     def clear_perm(self, path, owner, perm):
-        raise NotImplementedError()
+        for p in perm:
+            key = self.perms[[owner, p] + path.split('/')]
+            del self.db[key]

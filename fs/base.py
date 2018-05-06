@@ -3,12 +3,13 @@ import os, os.path
 import io
 import hashlib
 import mimetypes
+import msgpack
 import datetime, time
 from collections import defaultdict
 import six
 
 try:
-    PermissionError
+    PermissionError = PermissionError
 except NameError:
     class PermissionError(IOError):
         pass
@@ -27,6 +28,36 @@ except AttributeError:
         """
         pass
     abc.ABC = ABC
+
+
+class Record(dict):
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key)
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    @classmethod
+    def from_bytes(cls, data):
+        unpacked = {}
+        for k, v in msgpack.unpackb(data, encoding='utf8').items():
+            if not isinstance(k, six.text_type):
+                k = k.decode('utf8')
+            unpacked[k] = v
+        obj = cls(unpacked)
+        for k in ('created', 'modified'):
+            v = obj.get(k, None)
+            if v:
+                obj[k] = datetime.datetime.utcfromtimestamp(v)
+        return obj
+
+    def __bytes__(self):
+        return msgpack.packb(self, encoding='utf8', use_bin_type=True)
+    
+    to_bytes = as_foundationdb_value = __bytes__
 
 
 class BaseManager(abc.ABC):
@@ -169,15 +200,21 @@ class BaseManager(abc.ABC):
     def repo_history(self, repository, since=0):
         pass
 
-    def get_data(self, path, owner='*'):
+    def __getitem__(self, path):
         """
         gets the stored data
         """
         raise NotImplementedError()
 
-    def set_data(self, path, data, owner='*'):
+    def __setitem__(self, path, data):
         """
         sets the data
+        """
+        raise NotImplementedError()
+
+    def __delitem__(self, path):
+        """
+        deletes the data
         """
         raise NotImplementedError()
 
