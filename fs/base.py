@@ -5,7 +5,7 @@ import hashlib
 import mimetypes
 import msgpack
 import datetime, time
-from collections import defaultdict
+from collections import namedtuple
 import six
 
 try:
@@ -29,6 +29,7 @@ except AttributeError:
         pass
     abc.ABC = ABC
 
+Perm = namedtuple('Perm', ['read', 'write', 'delete'])(read=u'r', write=u'w', delete=u'd')
 
 class Record(dict):
     def __getattr__(self, key):
@@ -159,11 +160,11 @@ class BaseManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def set_perm(self, path, owner, perm='r'):
+    def set_perm(self, path, owner, perm=Perm.read):
         pass
     
     @abc.abstractmethod
-    def check_perm(self, path, owner, perm='r', raise_exception=True):
+    def check_perm(self, path, owner, perm=Perm.read, raise_exception=True):
         pass
 
     @abc.abstractmethod

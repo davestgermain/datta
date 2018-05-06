@@ -42,6 +42,8 @@ def main():
     # log_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
     log_parser.add_argument('path', help='path')
 
+    shell_parser = subparsers.add_parser('shell', help='start shell')
+
     
     args = parser.parse_args()
     
@@ -139,6 +141,12 @@ def main():
             if 'length' not in info:
                 info['length'] = 0
             six.print_(row.format(**info))
+    elif args.command == 'shell':
+        from IPython import start_ipython
+        ns = {
+            'fs': man
+        }
+        return start_ipython(argv=[], user_ns=ns)
     else:
         parser.print_help()
 

@@ -1,4 +1,4 @@
-from .base import BaseManager, Record, PermissionError
+from .base import BaseManager, Record, PermissionError, Perm
 import fdb
 import os, os.path
 import hashlib
@@ -28,12 +28,12 @@ class FSManager(BaseManager):
         self.db = fdb.open()
         tr = self.db.create_transaction()
         try:
-            self.files = fdb.directory.create_or_open(tr, 'fs')
-            self.history = fdb.directory.create_or_open(tr, 'hist')
-            self.kv = fdb.directory.create_or_open(tr, 'kv')
-            self.repos = fdb.directory.create_or_open(tr, 'repo')
-            self.perms = fdb.directory.create_or_open(tr, 'perms')
-            self.active_repos = {}
+            self._files = fdb.directory.create_or_open(tr, 'fs')
+            self._history = fdb.directory.create_or_open(tr, 'hist')
+            self._kv = fdb.directory.create_or_open(tr, 'kv')
+            self._repos = fdb.directory.create_or_open(tr, 'repo')
+            self._perms = fdb.directory.create_or_open(tr, 'perms')
+            self._active_repos = {}
         except:
             tr.cancel()
             raise
@@ -69,7 +69,7 @@ class FSManager(BaseManager):
     def get_file_metadata(self, path, rev, tr=None):
         if tr is None:
             tr = self.db
-        active = tr[self.make_file_key(path)] or None
+        active = tr[self._make_file_key(path)] or None
         if rev is None and not active:
             # there is no metadata
             return {}
@@ -148,7 +148,7 @@ class FSManager(BaseManager):
             written += len(val)
 
             # set the active key
-            tr[self.make_file_key(path)] = Record(created=created, modified=modified, rev=rev).to_bytes()
+            tr[self._make_file_key(path)] = Record(created=created, modified=modified, rev=rev).to_bytes()
         except:
             tr.cancel()
             raise
@@ -164,26 +164,26 @@ class FSManager(BaseManager):
         else:
             return tr[key[rev][chunk]]
 
-    def make_file_key(self, path):
+    def _make_file_key(self, path):
         if not isinstance(path, six.text_type):
             path = path.decode('utf8')
         if path:
             if path[0] == '/':
                 path = path[1:]
             path = [p for p in path.split('/') if p]
-        return self.files[path]
+        return self._files[path]
     
-    def path_hash(self, path):
+    def _path_hash(self, path):
         return hashlib.sha1(path.encode('utf8')).digest()
 
     def make_history_key(self, path, end=False):
-        r = [self.path_hash(path)]
+        r = [self._path_hash(path)]
         if end:
             r.append(None)
-        return self.history[r]
+        return self._history[r]
 
     def __contains__(self, path):
-        val = self.db[self.make_file_key(path)]
+        val = self.db[self._make_file_key(path)]
         return bool(val)
 
     def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, order=None, where=None, cols=None, delimiter='/'):
@@ -196,19 +196,19 @@ class FSManager(BaseManager):
         
         tr = self.db.create_transaction()
         try:
-            start = self.make_file_key(dirname).key()[:-1]
+            start = self._make_file_key(dirname).key()[:-1]
             end = start + b'\xff'
 
             nc = dirname.count(delimiter)
             for k, v in tr.get_range(start, end, limit=limit):
-                k = self.files.unpack(k)[0]
+                k = self._files.unpack(k)[0]
                 path = '/' + '/'.join(k)
                 if not walk and path.count(delimiter) > nc:
                     continue
                 meta = Record.from_bytes(v)
                 meta.update(self.get_file_metadata(path, rev=meta['rev'], tr=tr))
                 if open_files:
-                    yield VersionedFile(self, path, mode='r', requestor=owner, **meta)
+                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta)
                 else:
                     if owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
                         continue
@@ -223,11 +223,11 @@ class FSManager(BaseManager):
 
         tr = self.db.create_transaction()
         try:
-            start = self.make_file_key(directory).key()[:-1]
+            start = self._make_file_key(directory).key()[:-1]
             end = start + b'\xff'
             if include_history:
                 for i in tr[start:end]:
-                    path = u'/' + u'/'.join(self.files.unpack(i.key)[0])
+                    path = u'/' + u'/'.join(self._files.unpack(i.key)[0])
                     del tr[self.make_history_key(path).range()]
             del tr[start:end]
         except:
@@ -236,7 +236,7 @@ class FSManager(BaseManager):
         else:
             tr.commit().wait()
 
-    def rename(self, frompath, topath, owner='*', record_move=True):
+    def rename(self, frompath, topath, owner=u'*', record_move=True):
         frompath = os.path.normpath(frompath)
         topath = os.path.normpath(topath)
         if not isinstance(frompath, six.text_type):
@@ -247,9 +247,9 @@ class FSManager(BaseManager):
         return self._rename(self.db, frompath, topath, owner=owner, record_move=record_move)
     
     @fdb.transactional
-    def _rename(self, tr, frompath, topath, owner='*', record_move=True):
-        self.check_perm(frompath, owner=owner, perm='w', tr=tr)
-        self.check_perm(topath, owner=owner, perm='w', tr=tr)
+    def _rename(self, tr, frompath, topath, owner=u'*', record_move=True):
+        self.check_perm(frompath, owner=owner, perm=Perm.write, tr=tr)
+        self.check_perm(topath, owner=owner, perm=Perm.write, tr=tr)
         active = self.get_file_metadata(frompath, None)
         active['path'] = topath
         if record_move:
@@ -259,12 +259,12 @@ class FSManager(BaseManager):
             rev = active.rev + 1
             tr[self.make_history_key(frompath)[rev]] = hist.to_bytes()
             self._record_repo_history(tr, hist, rev)
-        tr[self.make_file_key(topath)] = Record(created=to_timestamp(active.created), modified=time.time(), rev=active.rev, path=frompath).to_bytes()
-        del tr[self.make_file_key(frompath)]
+        tr[self._make_file_key(topath)] = Record(created=to_timestamp(active.created), modified=time.time(), rev=active.rev, path=frompath).to_bytes()
+        del tr[self._make_file_key(frompath)]
 
         return 3
 
-    def delete(self, path, owner='*', include_history=False, force_timestamp=None):
+    def delete(self, path, owner=u'*', include_history=False, force_timestamp=None):
         """
         delete a file
         """
@@ -272,9 +272,9 @@ class FSManager(BaseManager):
         return self._delete(self.db, path, owner=owner, include_history=include_history, force_timestamp=force_timestamp)
 
     @fdb.transactional
-    def _delete(self, tr, path, owner='*', include_history=False, force_timestamp=None):
-        self.check_perm(path, owner=owner, perm='d', tr=tr)
-        fk = self.make_file_key(path)
+    def _delete(self, tr, path, owner=u'*', include_history=False, force_timestamp=None):
+        self.check_perm(path, owner=owner, perm=Perm.delete, tr=tr)
+        fk = self._make_file_key(path)
         val = tr[fk]
         if val.value:
             rev = Record.from_bytes(val.value).rev
@@ -322,9 +322,9 @@ class FSManager(BaseManager):
         return rev
 
     def _is_in_repo(self, tr, path):
-        for repo in self.active_repos:
+        for repo in self._active_repos:
             if path.startswith(repo):
-                return self.active_repos[repo]
+                return self._active_repos[repo]
 
     def _record_repo_history(self, tr, meta, rev):
         found = self._is_in_repo(tr, meta.path)
@@ -335,15 +335,15 @@ class FSManager(BaseManager):
 
     def create_repository(self, directory):
         directory = six.text_type(directory)
-        key = self.repos[directory]
+        key = self._repos[directory]
         tr = self.db.create_transaction()
         rev = -1
         try:
             val = tr[key[None]]
             if not val:
                 tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
-            keyrange = slice(key.key(), self.repos[directory, None].key())
-            self.active_repos[directory] = {'key': key, 'range': keyrange}
+            keyrange = slice(key.key(), self._repos[directory, None].key())
+            self._active_repos[directory] = {'key': key, 'range': keyrange}
         except:
             tr.cancel()
             raise
@@ -356,7 +356,7 @@ class FSManager(BaseManager):
         """
         repository = six.text_type(repository)
         try:
-            found = self.active_repos[repository]
+            found = self._active_repos[repository]
         except KeyError:
             raise Exception(repository)
         else:
@@ -371,9 +371,9 @@ class FSManager(BaseManager):
 
     def repo_history(self, repository, since=-1):
         repository = six.text_type(repository)
-        key = self.repos[repository]
-        start = self.repos[repository][since + 1]
-        end = self.repos[repository, None]
+        key = self._repos[repository]
+        start = self._repos[repository][since + 1]
+        end = self._repos[repository, None]
         for k, v in self.db.get_range(start, end, reverse=True):
             rev = key.unpack(k)[0]
             rec = Record.from_bytes(v)
@@ -392,7 +392,7 @@ class FSManager(BaseManager):
         """
         gets the stored data
         """
-        val = self.db[self.kv[path]]
+        val = self.db[self._kv[path]]
         if val:
             rec = Record.from_bytes(val)
             if '__value' in rec:
@@ -406,43 +406,43 @@ class FSManager(BaseManager):
         """
         sets the data as a msgpack string
         """
-        key = self.kv[path]
+        key = self._kv[path]
         if not isinstance(data, dict):
             data = {'__value': data}
         val = Record(data)
         self._set_data(self.db, key, val)
 
     def __delitem__(self, path):
-        del self.db[self.kv[path]]
+        del self.db[self._kv[path]]
 
     @fdb.transactional
     def _set_data(self, tr, key, data):
         tr[key] = data
 
     def common_prefixes(self, prefix, delimiter):
-        start = self.make_file_key(prefix).key()[:-1]
+        start = self._make_file_key(prefix).key()[:-1]
         end = start + b'\xff'
 
         nc = prefix.count(delimiter)
         pref = collections.defaultdict(int)
         for k, v in self.db.get_range(start, end):
-            k = self.files.unpack(k)[0]
+            k = self._files.unpack(k)[0]
             path = '/' + '/'.join(k)
             path = path.replace(prefix, '', 1)
             if path.count(delimiter) > 0:
                 pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
-    def check_perm(self, path, owner, perm=u'r', raise_exception=True, tr=None):
+    def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
         tr = tr or self.db
         pars = [owner, perm]
         upars = ['*', perm]
         sp = path.split('/')
         while sp:
-            key = self.perms[pars + sp]
+            key = self._perms[pars + sp]
             if tr[key] == b'':
                 return True
-            key = self.perms[upars + sp]
+            key = self._perms[upars + sp]
             if tr[key] == b'':
                 return True
             sp.pop(-1)
@@ -451,16 +451,16 @@ class FSManager(BaseManager):
         else:
             return False
 
-    def set_perm(self, path, owner, perm=u'r'):
+    def set_perm(self, path, owner, perm=Perm.read):
         sp = path.split('/')
         for p in perm:
             pars = [owner, p]
             pars.extend(sp)
-            key = self.perms[pars]
+            key = self._perms[pars]
             self.db[key] = b''
         return True
 
     def clear_perm(self, path, owner, perm):
         for p in perm:
-            key = self.perms[[owner, p] + path.split('/')]
+            key = self._perms[[owner, p] + path.split('/')]
             del self.db[key]
