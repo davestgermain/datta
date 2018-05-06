@@ -49,7 +49,7 @@ class Record(dict):
     def __bytes__(self):
         return msgpack.packb(self, encoding='utf8', use_bin_type=True)
     
-    to_bytes = __bytes__
+    to_bytes = as_foundationdb_value = __bytes__
 
 
 

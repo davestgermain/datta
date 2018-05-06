@@ -63,6 +63,7 @@ def main():
                 printed = True
             p['created'] = p.created.strftime(timeformat)
             p['modified'] = p.modified.strftime(timeformat)
+            p['content_type'] = six.text_type(p.content_type or '')
             row = templ.format(**p)
             six.print_(row)
     elif args.command == 'cat':
@@ -81,10 +82,8 @@ def main():
                     os.write(fn, block)
                 sys.stdout.flush()
     elif args.command == 'pipe':
-        import mimetypes
         fn = sys.stdin.fileno()
         with man.open(args.path, mode='w') as fp:
-            fp.content_type = mimetypes.guess_type(args.path)[0]
             while 1:
                 block = os.read(fn, 8192)
                 if not block:
