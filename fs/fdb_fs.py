@@ -100,7 +100,7 @@ class FSManager(BaseManager):
             val.rev = rev
         return val
 
-    def save_file_data(self, path, meta, buf):
+    def save_file_data(self, path, meta, buf, cipher=None):
         meta['bs'] = CHUNKSIZE
         rev = meta.get('rev', None)
         meta['created'] = created = to_timestamp(meta['created'])
@@ -126,10 +126,12 @@ class FSManager(BaseManager):
                 chunk = buf.read(CHUNKSIZE)
                 if not chunk:
                     break
-                tr[hist_key[rev][cn]] = chunk
-                written += len(chunk)
                 if hasher:
                     hasher.update(chunk)
+                if cipher:
+                    chunk = cipher['encrypt'](chunk)
+                tr[hist_key[rev][cn]] = chunk
+                written += len(chunk)
                 cn += 1
                 # transactions can't be too big
                 if written >= TRANSIZE:
@@ -156,13 +158,19 @@ class FSManager(BaseManager):
             # six.print_('SAVED', path, meta['length'])
             tr.commit().wait()
 
-    def get_file_chunks(self, path, rev, chunk=None):
+    def get_file_chunks(self, path, rev, chunk=None, cipher=None):
         key = self.make_history_key(path)
         tr = self.db
         if chunk is None:
-            return (i.value for i in tr.get_range(key[rev][0], key[rev + 1]))
+            chunks = (i.value for i in tr.get_range(key[rev][0], key[rev + 1]))
+            if cipher:
+                chunks = (cipher['decrypt'](chunk) for chunk in chunks)
+            return chunks
         else:
-            return tr[key[rev][chunk]]
+            chunk = tr[key[rev][chunk]]
+            if cipher:
+                chunk = cipher['decrypt'](chunk)
+            return chunk
 
     def _make_file_key(self, path):
         if not isinstance(path, six.text_type):

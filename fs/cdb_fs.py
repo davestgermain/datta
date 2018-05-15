@@ -108,7 +108,7 @@ class FSManager(BaseManager):
         result.bs = CHUNKSIZE
         return result
     
-    def save_file_data(self, path, meta, buf):
+    def save_file_data(self, path, meta, buf, cipher=None):
         rev = meta.get('rev', None)
         if rev is None:
             meta['rev'] = NEXTREV.where(history.c.path == self.path)
@@ -139,6 +139,8 @@ class FSManager(BaseManager):
                     chunk = buf.read(CHUNKSIZE)
                     if not chunk:
                         break
+                    if cipher:
+                        chunk = cipher['encrypt'](chunk)
                     r = conn.execute(chunks.insert({'version': version, 'data': chunk}))
             upd = insert(active).values(
                             path=path,
@@ -151,10 +153,12 @@ class FSManager(BaseManager):
                                     'modified': modified})
             conn.execute(upd)
 
-    def get_file_chunks(self, path, rev):
+    def get_file_chunks(self, path, rev, chunk=None, cipher=None):
         result = self.engine.execute(sa.select([chunks.c.data], order_by=chunks.c.id).where(history.c.path==path).where(history.c.rev==rev).where(chunks.c.version==history.c.id))
         for r in result:
             chunk = r[0]
+            if cipher:
+                chunk = cipher['decrypt'](chunk)
             yield chunk
 
     def subdirectories(self, dirname, delimiter='/'):
@@ -355,7 +359,7 @@ class FSManager(BaseManager):
         sets the data as a msgpack string
         """
         import msgpack
-        with self.open(path, mode='w', owner=owner) as fp:
+        with self.open(path, mode='w', owner=owner, rev=0) as fp:
             fp.content_type = 'application/msgpack'
             fp.write(msgpack.packb(data, use_bin_type=True))
 

@@ -88,7 +88,7 @@ class BaseManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_file_chunks(self, path, rev):
+    def get_file_chunks(self, path, rev, chunk=None, cipher=None):
         """
         Return iterator of file chunks
         """
@@ -248,8 +248,10 @@ class VersionedFile(io.BufferedIOBase):
         self.data = None
         self.meta = meta or {}
         self.mode = mode
+        self._seekable = True
         self.length = 0
         self.bs = 8192
+        self._cipher = None
         self.manager = manager
         val = manager.get_file_metadata(filename, rev)
         if val:
@@ -303,7 +305,7 @@ class VersionedFile(io.BufferedIOBase):
             if getattr(self, 'force_rev', None):
                 hist_data['rev'] = rev = self.force_rev
 
-            self.manager.save_file_data(self.path, hist_data, self._buf)
+            self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)
 
             self._buf = None
         self.mode = None
@@ -316,7 +318,7 @@ class VersionedFile(io.BufferedIOBase):
         return self.mode == 'w'
 
     def seekable(self):
-        return True
+        return self._seekable
 
     def tell(self):
         if self.readable():
@@ -335,7 +337,7 @@ class VersionedFile(io.BufferedIOBase):
                 abspos = self.length + pos
             self._pos = abspos
             return self._pos
-        elif self.mode == 'w':
+        elif self.mode == 'w' and self.seekable():
             return self._buf.seek(pos, whence)
 
     def read(self, size=-1):
@@ -344,7 +346,7 @@ class VersionedFile(io.BufferedIOBase):
         if self._pos == 0 and size == -1:
             # optimization for reading the whole file
             buf = b''
-            for chunk in self.manager.get_file_chunks(self.path, self.rev):
+            for chunk in self.manager.get_file_chunks(self.path, self.rev, cipher=self._cipher):
                 buf += chunk
             self._pos = len(buf)
             return buf
@@ -354,12 +356,12 @@ class VersionedFile(io.BufferedIOBase):
         where, pos = divmod(self._pos, self.bs)
 
         if self._curr_chunk_num != where:
-            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where)
+            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where, cipher=self._cipher)
             self._curr_chunk_num = where
         buf += self._curr_chunk[pos:]
         while len(buf) < length:
             where += 1
-            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where)
+            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where, cipher=self._cipher)
             if self._curr_chunk is None:
                 self._curr_chunk_num = None
                 break
@@ -394,4 +396,26 @@ class VersionedFile(io.BufferedIOBase):
                 v = datetime.datetime.utcfromtimestamp(v)
             setattr(self, k, v)
 
-
+    def set_encryption(self, password='', save_password=False):
+        """
+        Set the encryption password, optionally saving the password in the metadata
+        """
+        import blowfish
+        password = hashlib.sha512(password.encode('utf8')).digest()[:56]
+        if self.writable():
+            assert self._cipher is None
+            self.meta[u'_encryption'] = {
+                u'method': u'cfb',
+                u'iv': os.urandom(8),
+            }
+            if save_password:
+                self.meta[u'_encryption'][u'key'] = password
+        else:
+            assert u'_encryption' in self.meta
+            password = self.meta[u'_encryption'].get(u'key', None) or password
+        c = blowfish.Cipher(password)
+        iv = self.meta[u'_encryption'][u'iv']
+        self._cipher = {
+            'encrypt': lambda chunk: b''.join(c.encrypt_cfb(chunk, iv)),
+            'decrypt': lambda chunk: b''.join(c.decrypt_cfb(chunk, iv)),
+        }

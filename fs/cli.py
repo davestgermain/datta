@@ -3,6 +3,7 @@ import argparse
 import six
 import sys
 import os.path
+import os
 from . import get_manager
 
 def main():
@@ -55,6 +56,7 @@ def main():
     
     man = get_manager(args.dsn)
 
+    owner = os.getlogin()
     if args.command == 'ls':
         templ = '{path:48}\t{length:8}\t{created:26}\t{modified:26}'
         kwargs = dict(path='Path', length='Size', created='Created', modified='Modified')
@@ -75,7 +77,7 @@ def main():
             row = templ.format(**p)
             six.print_(row)
     elif args.command == 'cat':
-        with man.open(args.path, mode='r', rev=args.version) as fp:
+        with man.open(args.path, mode='r', rev=args.version, owner=owner) as fp:
             fn = sys.stdout.fileno()
             if os.isatty(fn):
                 try:
@@ -87,11 +89,14 @@ def main():
                     block = fp.read(8192)
                     if not block:
                         break
-                    os.write(fn, block)
+                    try:
+                        os.write(fn, block)
+                    except BrokenPipeError:
+                        break
                 sys.stdout.flush()
     elif args.command == 'pipe':
         fn = sys.stdin.fileno()
-        with man.open(args.path, mode='w') as fp:
+        with man.open(args.path, mode='w', owner=owner) as fp:
             while 1:
                 block = os.read(fn, 8192)
                 if not block:
@@ -103,8 +108,8 @@ def main():
         else:
             frompath, topath = args.frompath, args.topath
             if frompath.startswith('@') and topath.startswith('@'):
-                with man.open(frompath[1:], mode='r') as fp:
-                    with man.open(topath[1:], mode='w') as tp:
+                with man.open(frompath[1:], mode='r', owner=owner) as fp:
+                    with man.open(topath[1:], mode='w', owner=owner) as tp:
                         while 1:
                             block = fp.read(8192)
                             if not block:
@@ -112,7 +117,7 @@ def main():
                             tp.write(block)
             elif frompath.startswith('@'):
                 # copy from fs to here
-                with man.open(frompath[1:], mode='r') as fp:
+                with man.open(frompath[1:], mode='r', owner=owner) as fp:
                     if topath.endswith('/'):
                         topath = os.path.join(topath, os.path.basename(frompath))
                     with open(topath, mode='wb') as tp:
