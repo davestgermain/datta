@@ -91,11 +91,12 @@ class BaseManager(abc.ABC):
     def get_file_chunks(self, path, rev, chunk=None, cipher=None):
         """
         Return iterator of file chunks
+        or the specified chunk
         """
         pass
 
     @abc.abstractmethod
-    def save_file_data(self, path, meta, buffer):
+    def save_file_data(self, path, meta, buffer, cipher=None):
         """
         Save the file metadata and data (in file-like buffer)
         """
@@ -127,7 +128,7 @@ class BaseManager(abc.ABC):
             to_ctype = mimetypes.guess_type(topath)[0]
             if to_ctype != content_type:
                 content_type = to_ctype
-        with self.open(topath, mode='w') as tofile:
+        with self.open(topath, mode=Perm.write) as tofile:
             tofile.content_type = content_type
             while 1:
                 data = filename_or_fileobj.read(8192)
@@ -220,14 +221,14 @@ class BaseManager(abc.ABC):
         """
         raise NotImplementedError()
 
-    def open(self, path, mode='r', owner='*', rev=None, version=None):
+    def open(self, path, mode=Perm.read, owner='*', rev=None, version=None):
         """
         Open the file at path
         """
         path = os.path.normpath(path)
         return VersionedFile(self, path, mode=mode, rev=rev, requestor=owner, version=version)
 
-    def open_many(self, paths, mode='r', owner='*'):
+    def open_many(self, paths, mode=Perm.read, owner='*'):
         """
         Open files
         """
@@ -239,7 +240,7 @@ class BaseManager(abc.ABC):
 
 
 class VersionedFile(io.BufferedIOBase):
-    def __init__(self, manager, filename, mode='r', requestor='*', meta=None, rev=None, **kwargs):
+    def __init__(self, manager, filename, mode=Perm.read, requestor='*', meta=None, rev=None, **kwargs):
         io.BufferedIOBase.__init__(self)
         self.path = self.name = filename
         manager.check_perm(self.path, owner=requestor, perm=mode)
@@ -257,16 +258,16 @@ class VersionedFile(io.BufferedIOBase):
         if val:
             self.update(val)
         
-        if mode == 'r' and 'id' not in kwargs:
+        if mode == Perm.read and 'id' not in kwargs:
             if not val:
                 raise FileNotFoundError(self.path)
-        elif mode == 'w':
+        elif mode == Perm.write:
             self.owner = requestor 
 
         if kwargs:
             self.update(kwargs)
         self._pos = 0
-        if mode == 'r':
+        if mode == Perm.read:
             if self.data:
                 self._curr_chunk = self.data
                 self._curr_chunk_num = 0
@@ -312,10 +313,10 @@ class VersionedFile(io.BufferedIOBase):
         io.BufferedIOBase.close(self)
 
     def readable(self):
-        return self.mode == 'r'
+        return self.mode == Perm.read
 
     def writable(self):
-        return self.mode == 'w'
+        return self.mode == Perm.write
 
     def seekable(self):
         return self._seekable
@@ -327,7 +328,7 @@ class VersionedFile(io.BufferedIOBase):
             return self._buf.tell()
 
     def seek(self, pos, whence=0):
-        if self.mode == 'r':
+        if self.mode == Perm.read:
             curpos = self._pos
             if whence == 0:
                 abspos = pos
@@ -337,11 +338,11 @@ class VersionedFile(io.BufferedIOBase):
                 abspos = self.length + pos
             self._pos = abspos
             return self._pos
-        elif self.mode == 'w' and self.seekable():
+        elif self.mode == Perm.write and self.seekable():
             return self._buf.seek(pos, whence)
 
     def read(self, size=-1):
-        if self.mode != 'r':
+        if self.mode != Perm.read:
             return
         if self._pos == 0 and size == -1:
             # optimization for reading the whole file
@@ -419,3 +420,4 @@ class VersionedFile(io.BufferedIOBase):
             'encrypt': lambda chunk: b''.join(c.encrypt_cfb(chunk, iv)),
             'decrypt': lambda chunk: b''.join(c.decrypt_cfb(chunk, iv)),
         }
+

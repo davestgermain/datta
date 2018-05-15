@@ -450,7 +450,7 @@ class FSManager(BaseManager):
     def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
         tr = tr or self.db
         pars = [owner, perm]
-        upars = ['*', perm]
+        upars = [u'*', perm]
         sp = self._perm_path(path)
         while sp:
             key = self._perms[pars + sp]

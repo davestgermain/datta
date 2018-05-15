@@ -154,7 +154,7 @@ class DBCacheManager(CacheManager):
         path = self._path(url)
         with self.fs.open(path, mode=u'w', owner=u'cache') as fp:
             fp.meta[u'exp'] = exp
-            cPickle.dump(response, fp)
+            cPickle.dump(response, fp, protocol=-1)
     
     def __delitem__(self, url):
         self.fs.delete(self._path(url), owner=u'cache', include_history=True)
