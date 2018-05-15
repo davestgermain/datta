@@ -62,9 +62,10 @@ class Record(dict):
 
 
 class BaseManager(abc.ABC):
-    def __init__(self, dsn='', debug=False):
+    def __init__(self, dsn='', debug=False, **kwargs):
         self.debug = debug
         self.dsn = dsn
+        self.options = kwargs
         self._setup()
     
     @abc.abstractmethod
@@ -367,6 +368,9 @@ class VersionedFile(io.BufferedIOBase):
         read = buf[:length]
         self._pos += len(read)
         return read
+
+    async def aread(self, size=-1):
+        return self.read(size)
 
     def readall(self):
         return self.read()

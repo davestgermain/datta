@@ -10,7 +10,7 @@ except ImportError:
 
 MANAGERS = {}
 
-def get_manager(dsn=None, debug=False):
+def get_manager(dsn=None, debug=False, **kwargs):
     if dsn is None:
         dsn = os.environ.get('FS_DSN', 'fdb')
     
@@ -19,6 +19,6 @@ def get_manager(dsn=None, debug=False):
             module = 'datta.fs.fdb_fs'
         else:
             module = 'datta.fs.cdb_fs'
-        MANAGERS[dsn] = importlib.import_module(module).FSManager(dsn, debug=debug)
+        MANAGERS[dsn] = importlib.import_module(module).FSManager(dsn, debug=debug, **kwargs)
     return MANAGERS[dsn]
 

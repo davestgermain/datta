@@ -433,11 +433,17 @@ class FSManager(BaseManager):
                 pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
+    def _perm_path(self, path):
+        if path[0] == '/':
+            path = path[1:]
+        path = [p for p in path.split('/') if p]
+        return path
+
     def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
         tr = tr or self.db
         pars = [owner, perm]
         upars = ['*', perm]
-        sp = path.split('/')
+        sp = self._perm_path(path)
         while sp:
             key = self._perms[pars + sp]
             if tr[key] == b'':
@@ -452,15 +458,15 @@ class FSManager(BaseManager):
             return False
 
     def set_perm(self, path, owner, perm=Perm.read):
-        sp = path.split('/')
+        sp = self._perm_path(path)
         for p in perm:
-            pars = [owner, p]
-            pars.extend(sp)
+            pars = [owner, p] + sp
             key = self._perms[pars]
             self.db[key] = b''
         return True
 
     def clear_perm(self, path, owner, perm):
+        sp = self._perm_path(path)
         for p in perm:
-            key = self._perms[[owner, p] + path.split('/')]
+            key = self._perms[[owner, p] + sp]
             del self.db[key]

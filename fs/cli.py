@@ -44,6 +44,12 @@ def main():
 
     shell_parser = subparsers.add_parser('shell', help='start shell')
 
+    perm_parser = subparsers.add_parser('set_perm', help='set permission')
+    perm_parser.add_argument('path', help='path')
+    perm_parser.add_argument('-u', dest='owner', help='owner')
+    perm_parser.add_argument('-p', dest='perm', help='perm')
+    
+
     
     args = parser.parse_args()
     
@@ -147,6 +153,8 @@ def main():
             'fs': man
         }
         return start_ipython(argv=[], user_ns=ns)
+    elif args.command == 'set_perm':
+        man.set_perm(args.path, args.owner, args.perm)
     else:
         parser.print_help()
 
