@@ -1,4 +1,4 @@
-from .base import BaseManager, Record, PermissionError, Perm
+from .base import BaseManager, Record, PermissionError, Perm, VersionedFile
 import fdb
 import os, os.path
 import hashlib

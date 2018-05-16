@@ -2,7 +2,9 @@ import abc
 import os, os.path
 import io
 import hashlib
+import uuid
 import mimetypes
+from tempfile import SpooledTemporaryFile
 import msgpack
 import datetime, time
 from collections import namedtuple
@@ -68,6 +70,9 @@ class BaseManager(abc.ABC):
         self.options = kwargs
         self._setup()
     
+    def __repr__(self):
+        return '%s%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn)
+
     @abc.abstractmethod
     def _setup(self):
         pass
@@ -238,6 +243,62 @@ class BaseManager(abc.ABC):
             vf = VersionedFile(self, path, requestor=owner, mode=mode, **meta)
             yield vf
 
+    def partial(self, path, id=None, **kwargs):
+        part = Partial(self, path, id)
+        if id is None:
+            part.start(kwargs)
+        return part
+
+
+class Partial:
+    """
+    Support object for resumable uploads
+    """
+    def __init__(self, manager, path, id):
+        self.manager = manager
+        if not id:
+            id = uuid.uuid4().hex
+        self.id = id
+        self.dest = path
+        path = ['', '.partial'] + [p for p in path.split('/') if p] + [self.id]
+        self.path = '/'.join(path)
+
+    def start(self, meta):
+        six.print_('starting', self.path, self.dest)
+        self.manager.check_perm(self.dest, meta.get('owner'), perm=Perm.write)
+        path = os.path.join(self.path, '-1')
+        with self.manager.open(path, mode=Perm.write, owner='sys') as fp:
+            fp.content_type = meta.pop('content_type', None)
+            fp.meta = meta
+
+    def add(self, chunk, num):
+        path = os.path.join(self.path, str(num))
+        with self.manager.open(path, mode=Perm.write, owner='sys') as fp:
+            fp.write(chunk)
+        return chunk
+
+    def combine(self, partnums, owner=None):
+        with self.manager.open(self.dest, mode=Perm.write, owner=owner) as fp:
+            fp.do_hash()
+            for part in partnums:
+                with self.manager.open(os.path.join(self.path, str(part)), owner='sys') as p:
+                    six.print_(p.path)
+                    if p.path.endswith('/-1'):
+                        fp.meta = p.meta
+                        fp.content_type = p.content_type
+                    else:
+                        chunk = p.read()
+                        fp.write(chunk)
+                        six.print_('wrote %s to %s' % (len(chunk), self.dest))
+        self.manager.rmtree(self.path)
+        return fp
+
+    def list(self):
+        for p in self.manager.listdir(self.path, open_files=True):
+            partnum = int(p.path.split('/')[-1])
+            if partnum > -1:
+                yield partnum, p.read()
+
 
 class VersionedFile(io.BufferedIOBase):
     def __init__(self, manager, filename, mode=Perm.read, requestor='*', meta=None, rev=None, **kwargs):
@@ -275,7 +336,7 @@ class VersionedFile(io.BufferedIOBase):
                 self._curr_chunk_num = None
                 self._curr_chunk = None
         else:
-            self._buf = io.BytesIO()
+            self._buf = SpooledTemporaryFile(max_size=getattr(self, 'buffer_threshold', 52428800))
             self.hash = None
 
     def do_hash(self, algo='sha256'):
@@ -308,9 +369,13 @@ class VersionedFile(io.BufferedIOBase):
 
             self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)
 
+            self._buf.close()
             self._buf = None
         self.mode = None
         io.BufferedIOBase.close(self)
+
+    def __del__(self):
+        self.close()
 
     def readable(self):
         return self.mode == Perm.read
