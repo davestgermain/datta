@@ -249,6 +249,20 @@ class BaseManager(abc.ABC):
             part.start(kwargs)
         return part
 
+    def list_partials(self, path):
+        for p in self.listdir('/.partial' + path, walk=True):
+            if p.path.endswith('/-1'):
+                path = p.path.replace('/.partial', '', 1)
+                pid = path.split('/')[-2]
+                path = '/'.join(path.split('/')[:-2])
+                info = {
+                    'id': pid,
+                    'path': path,
+                    'created': p.created,
+                    'meta': p.meta,
+                    'owner': p.owner,
+                }
+                yield info
 
 class Partial:
     """
@@ -271,9 +285,14 @@ class Partial:
             fp.content_type = meta.pop('content_type', None)
             fp.meta = meta
 
-    def add(self, chunk, num):
+    def open_part(self, num):
         path = os.path.join(self.path, str(num))
-        with self.manager.open(path, mode=Perm.write, owner='sys') as fp:
+        part = self.manager.open(path, mode=Perm.write, owner='sys')
+        part.do_hash('md5')
+        return part
+
+    def add(self, chunk, num):
+        with self.open_part(num) as fp:
             fp.write(chunk)
         return chunk
 
@@ -294,10 +313,10 @@ class Partial:
         return fp
 
     def list(self):
-        for p in self.manager.listdir(self.path, open_files=True):
+        for p in self.manager.listdir(self.path, owner='sys'):
             partnum = int(p.path.split('/')[-1])
             if partnum > -1:
-                yield partnum, p.read()
+                yield partnum, p
 
 
 class VersionedFile(io.BufferedIOBase):
@@ -374,8 +393,8 @@ class VersionedFile(io.BufferedIOBase):
         self.mode = None
         io.BufferedIOBase.close(self)
 
-    def __del__(self):
-        self.close()
+    # def __del__(self):
+    #     self.close()
 
     def readable(self):
         return self.mode == Perm.read

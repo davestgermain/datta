@@ -461,7 +461,7 @@ class FSManager(BaseManager):
                 return True
             sp.pop(-1)
         if raise_exception:
-            raise PermissionError((owner, perm))
+            raise PermissionError((path, owner, perm))
         else:
             return False
 
