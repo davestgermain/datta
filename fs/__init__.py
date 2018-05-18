@@ -1,6 +1,7 @@
 import importlib
 import os
 import six
+from .base import Perm
 try:
     from .base import FileNotFoundError
 except ImportError:

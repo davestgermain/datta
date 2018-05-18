@@ -5,7 +5,7 @@ from datta import dbstorage, dbsearch
 
 dsn = 'cockroachdb://root@localhost:26257/wiki?sslcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.crt&sslkey=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.key&sslmode=verify-full&sslrootcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fca.crt'
 
-dsn = 'fdb'
+dsn = 'lmdb:///Users/dcs/lmdbfs/'
 
 config = WikiConfig(
     repo_path=dsn,

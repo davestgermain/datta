@@ -23,6 +23,9 @@ def get_etag(data):
 def get_xml(request):
     return fromstring(request.body.decode('utf8'))
 
+async def asynread(fp, size=-1):
+    return fp.read(size)
+
 def good_response(request, fileobj, headers=None):
     headers = headers or {}
     content_type = fileobj.content_type or 'application/octet-stream'
@@ -88,7 +91,7 @@ def good_response(request, fileobj, headers=None):
         async def iterator(response):
             nonlocal to_read, fileobj
             while to_read > 0:
-                chunk = await fileobj.aread(min(to_read, 4096))
+                chunk = await asynread(fileobj, min(to_read, 4096))
                 if chunk:
                     response.write(chunk)
                     to_read -= len(chunk)

@@ -31,7 +31,12 @@ except AttributeError:
         pass
     abc.ABC = ABC
 
-Perm = namedtuple('Perm', ['read', 'write', 'delete'])(read=u'r', write=u'w', delete=u'd')
+Perm = namedtuple('Perm', ['read', 'write', 'delete', 'ALL'])(read=u'r', write=u'w', delete=u'd', ALL=u'rwd')
+
+class Owner:
+    ALL = u'*'
+    SYS = u'sys'
+
 
 class Record(dict):
     def __getattr__(self, key):
@@ -46,7 +51,11 @@ class Record(dict):
     @classmethod
     def from_bytes(cls, data):
         unpacked = {}
-        for k, v in msgpack.unpackb(data, raw=False).items():
+        if six.PY3:
+            val = msgpack.unpackb(data, raw=False)
+        else:
+            val = msgpack.unpackb(data, encoding='utf8')
+        for k, v in val.items():
             if not isinstance(k, six.text_type):
                 k = k.decode('utf8')
             unpacked[k] = v
@@ -57,10 +66,14 @@ class Record(dict):
                 obj[k] = datetime.datetime.utcfromtimestamp(v)
         return obj
 
-    def __bytes__(self):
-        return msgpack.packb(self, use_bin_type=False)
-    
-    to_bytes = as_foundationdb_value = __bytes__
+    if six.PY3:
+        def to_bytes(self):
+            return msgpack.packb(self, use_bin_type=False)
+    else:
+        def to_bytes(self):
+            return msgpack.packb(self, use_bin_type=True, encoding='utf8')
+
+    as_foundationdb_value = to_bytes
 
 
 class BaseManager(abc.ABC):
@@ -159,18 +172,18 @@ class BaseManager(abc.ABC):
                 self.copyfile(fn, ft)
 
     @abc.abstractmethod
-    def delete(self, path, owner='*', include_history=False, force_timestamp=None):
+    def delete(self, path, owner=Owner.ALL, include_history=False, force_timestamp=None):
         """
         delete a file
         """
         pass
 
     # @abc.abstractmethod
-    def delete_old_versions(self, path, owner='*', maxrev=-1):
+    def delete_old_versions(self, path, owner=Owner.ALL, maxrev=-1):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def rename(self, frompath, topath, owner='*', record_move=True):
+    def rename(self, frompath, topath, owner=Owner.ALL, record_move=True):
         pass
 
     @abc.abstractmethod
@@ -233,14 +246,14 @@ class BaseManager(abc.ABC):
         """
         raise NotImplementedError()
 
-    def open(self, path, mode=Perm.read, owner='*', rev=None, version=None):
+    def open(self, path, mode=Perm.read, owner=Owner.ALL, rev=None, version=None):
         """
         Open the file at path
         """
         path = os.path.normpath(path)
         return VersionedFile(self, path, mode=mode, rev=rev, requestor=owner, version=version)
 
-    def open_many(self, paths, mode=Perm.read, owner='*'):
+    def open_many(self, paths, mode=Perm.read, owner=Owner.ALL):
         """
         Open files
         """
@@ -251,18 +264,18 @@ class BaseManager(abc.ABC):
             yield vf
 
     def partial(self, path, id=None, **kwargs):
-        self.set_perm('/.partial/', 'sys', 'rwd')
+        self.set_perm(u'/.partial/', Owner.SYS, 'rwd')
         part = Partial(self, path, id)
         if id is None:
             part.start(kwargs)
         return part
 
     def list_partials(self, path):
-        for p in self.listdir('/.partial' + path, walk=True):
-            if p.path.endswith('/-1'):
-                path = p.path.replace('/.partial', '', 1)
+        for p in self.listdir(u'/.partial' + path, walk=True):
+            if p.path.endswith(u'/-1'):
+                path = p.path.replace(u'/.partial', '', 1)
                 pid = path.split('/')[-2]
-                path = '/'.join(path.split('/')[:-2])
+                path = u'/'.join(path.split('/')[:-2])
                 info = {
                     'id': pid,
                     'path': path,
@@ -289,13 +302,13 @@ class Partial:
         six.print_('starting', self.path, self.dest)
         self.manager.check_perm(self.dest, meta.get('owner'), perm=Perm.write)
         path = os.path.join(self.path, '-1')
-        with self.manager.open(path, mode=Perm.write, owner='sys') as fp:
+        with self.manager.open(path, mode=Perm.write, owner=Owner.SYS) as fp:
             fp.content_type = meta.pop('content_type', None)
             fp.meta = meta
 
     def open_part(self, num):
         path = os.path.join(self.path, str(num))
-        part = self.manager.open(path, mode=Perm.write, owner='sys')
+        part = self.manager.open(path, mode=Perm.write, owner=Owner.SYS)
         part.do_hash('md5')
         return part
 
@@ -308,7 +321,7 @@ class Partial:
         with self.manager.open(self.dest, mode=Perm.write, owner=owner) as fp:
             fp.do_hash()
             for part in partnums:
-                with self.manager.open(os.path.join(self.path, str(part)), owner='sys') as p:
+                with self.manager.open(os.path.join(self.path, str(part)), owner=Owner.SYS) as p:
                     six.print_(p.path)
                     if p.path.endswith('/-1'):
                         fp.meta = p.meta
@@ -321,14 +334,14 @@ class Partial:
         return fp
 
     def list(self):
-        for p in self.manager.listdir(self.path, owner='sys'):
+        for p in self.manager.listdir(self.path, owner=Owner.SYS):
             partnum = int(p.path.split('/')[-1])
             if partnum > -1:
                 yield partnum, p
 
 
 class VersionedFile(io.BufferedIOBase):
-    def __init__(self, manager, filename, mode=Perm.read, requestor='*', meta=None, rev=None, **kwargs):
+    def __init__(self, manager, filename, mode=Perm.read, requestor=Owner.ALL, meta=None, rev=None, **kwargs):
         io.BufferedIOBase.__init__(self)
         self.path = self.name = filename
         manager.check_perm(self.path, owner=requestor, perm=mode)
@@ -464,9 +477,6 @@ class VersionedFile(io.BufferedIOBase):
         read = buf[:length]
         self._pos += len(read)
         return bytes(read)
-
-    async def aread(self, size=-1):
-        return self.read(size)
 
     def readall(self):
         return self.read()

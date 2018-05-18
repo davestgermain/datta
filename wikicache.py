@@ -128,8 +128,8 @@ class FSCacheManager(CacheManager):
 class DBCacheManager(CacheManager):
     def _setup(self):
         self.fs = self.wiki.storage.fs
-        self._prefix = os.path.join('/.cache', self.wiki.storage._root.replace('/', '')) + '/'
-        self.fs.set_perm(self._prefix, 'cache', ['r', 'w', 'd'])
+        self._prefix = os.path.join(u'/.cache', self.wiki.storage._root.replace(u'/', '')) + u'/'
+        self.fs.set_perm(self._prefix, u'cache', u'rwd')
     
     def _path(self, url):
         return os.path.join(self._prefix, url[1:])

@@ -84,8 +84,8 @@ class DBProxy(object):
     def __setitem__(self, key, value):
         if hasattr(key, 'key'):
             key = key.key()
-        if hasattr(value, '__bytes__'):
-            value = bytes(value)
+        if hasattr(value, 'to_bytes'):
+            value = value.to_bytes()
         self.txn.put(key, value)
 
 
@@ -117,11 +117,11 @@ class FSManager(BaseKVFSManager):
                                      max_dbs=200,
                                      sync=kwargs.get('sync', True))
         self.db = DBProxy(self.env)
-        self._files = subspace.Subspace(('fs', ))
-        self._history = subspace.Subspace(('hist', ))
-        self._kv = subspace.Subspace(('kv', ))
-        self._repos = subspace.Subspace(('repo', ))
-        self._perms = subspace.Subspace(('perms', ))
+        self._files = subspace.Subspace((u'fs', ))
+        self._history = subspace.Subspace((u'hist', ))
+        self._kv = subspace.Subspace((u'kv', ))
+        self._repos = subspace.Subspace((u'repo', ))
+        self._perms = subspace.Subspace((u'perms', ))
         self._active_repos = {}
 
     @contextmanager

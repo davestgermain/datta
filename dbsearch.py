@@ -22,13 +22,13 @@ class DBStorage(Storage):
         self.locks = {}
 
     def create(self):
-        self.fs.set_perm(self.prefix, '*', ['r', 'w', 'd'])
+        self.fs.set_perm(self.prefix, u'*', u'rwd')
 
     def _topath(self, name):
         return os.path.join(self.prefix, name)
 
-    def create_file(self, name, mode='w'):
-        return self.open_file(unicode(name), mode='w')
+    def create_file(self, name, mode=u'w'):
+        return self.open_file(unicode(name), mode=u'w')
 
     def delete_file(self, name):
         self.fs.delete(self._topath(name), include_history=True)
@@ -42,11 +42,11 @@ class DBStorage(Storage):
         return self._topath(name) in self.fs
 
     def file_length(self, name):
-        with self.fs.open(self._topath(name), mode='r') as fp:
+        with self.fs.open(self._topath(name), mode=u'r') as fp:
             return fp.length
 
     def file_modified(self, name):
-        with self.fs.open(self._topath(name), mode='r') as fp:
+        with self.fs.open(self._topath(name), mode=u'r') as fp:
             return fp.modified
 
     def __iter__(self):
@@ -56,7 +56,7 @@ class DBStorage(Storage):
     def list(self):
         return [p.path.replace(self.prefix, u'') for p in self.fs.listdir(self.prefix)]
 
-    def open_file(self, name, mode='r'):
+    def open_file(self, name, mode=u'r'):
         path = self._topath(name)
         sf = StructFile(self.fs.open(path, mode=mode))
         sf.is_real = False
@@ -78,7 +78,7 @@ class DBStorage(Storage):
             self.fs.delete(f.path, include_history=True)
 
 
-class WikiDBSearch(object):
+class WikiDBSearch(hatta.search.WikiSearch):
     INDEX_THREAD = None
 
     def __init__(self, cache_path, lang, storage):
@@ -94,7 +94,7 @@ class WikiDBSearch(object):
         #     os.makedirs(ipath)
         # self.istore = FileStorage(ipath)
         self.istore = DBStorage(self.fs, os.path.join(u'/.meta/', storage._wiki, u'search/'))
-        
+        self.istore.create()
         if self.istore.index_exists():
             self.index = self.istore.open_index()
         else:

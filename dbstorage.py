@@ -5,6 +5,7 @@ import datetime
 import time
 import os, os.path
 import six
+import mimetypes
 
 
 # Note: we have to set these before importing Mercurial
@@ -13,7 +14,7 @@ os.environ['HGENCODING'] = 'utf-8'
 
 from hatta import error
 from hatta import page
-from datta.fs import get_manager, FileNotFoundError
+from datta.fs import get_manager, FileNotFoundError, Perm
 
 
 class StorageError(Exception):
@@ -52,9 +53,9 @@ class WikiStorage(object):
         self.unix_eol = unix_eol
         self.extension = extension
         self.fs = get_manager(repo_path, debug=False)
-        self._wiki = path.split('/')[-1]
-        self._root = self._path() + '/'
-        self.fs.set_perm(self._root, owner='*', perm=['r', 'w', 'd'])
+        self._wiki = path.split(u'/')[-1]
+        self._root = self._path() + u'/'
+        self.fs.set_perm(self._root, owner=u'*', perm=[u'r', u'w', u'd'])
         self.fs.create_repository(self._root)
         self.repo_path = repo_path
 
@@ -93,9 +94,10 @@ class WikiStorage(object):
         #         except ValueError:
         #             text = _(u'failed merge of edit conflict').encode('utf-8')
 
-        with self.open_page(title, mode='w', owner=user) as fp:
+        with self.open_page(title, mode=Perm.write, owner=user) as fp:
             fp.owner = user
             fp.meta[u'comment'] = text
+            fp.content_type = unicode(mimetypes.guess_type(title)[0] or 'text/plain')
             if parent_rev:
                 fp.meta[u'parent'] = parent_rev
             if ts:
@@ -119,7 +121,7 @@ class WikiStorage(object):
         text = six.text_type(data, self.charset, 'replace')
         return text
 
-    def open_page(self, title, mode='r', rev=None, owner='*'):
+    def open_page(self, title, mode=Perm.read, rev=None, owner=u'*'):
         """Open the page and return a file-like object with its contents."""
         try:
             return self.fs.open(self._path(title), owner=owner, mode=mode, rev=rev)

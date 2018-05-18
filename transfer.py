@@ -12,7 +12,7 @@ import six
 
 mstore = hatta.storage.WikiStorage(sys.argv[1])
 # dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='cockroachdb://root@localhost:26257/wiki?sslcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.crt&sslkey=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.key&sslmode=verify-full&sslrootcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fca.crt')
-dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='fdb')
+dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='lmdb:///Users/dcs/lmdbfs/')
 
 history = list(mstore.history())
 history.reverse()

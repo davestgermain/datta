@@ -13,11 +13,11 @@ class FSManager(BaseKVFSManager):
     def _setup(self):
         self.db = fdb.open()
         with self._begin(write=True) as tr:
-            self._files = fdb.directory.create_or_open(tr, 'fs')
-            self._history = fdb.directory.create_or_open(tr, 'hist')
-            self._kv = fdb.directory.create_or_open(tr, 'kv')
-            self._repos = fdb.directory.create_or_open(tr, 'repo')
-            self._perms = fdb.directory.create_or_open(tr, 'perms')
+            self._files = fdb.directory.create_or_open(tr, u'fs')
+            self._history = fdb.directory.create_or_open(tr, u'hist')
+            self._kv = fdb.directory.create_or_open(tr, u'kv')
+            self._repos = fdb.directory.create_or_open(tr, u'repo')
+            self._perms = fdb.directory.create_or_open(tr, u'perms')
             self._active_repos = {}
     
     @contextmanager
