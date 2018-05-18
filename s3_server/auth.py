@@ -216,15 +216,6 @@ def get_aws_signature(url, method, headers, signed_headers, secret_key, date, se
     signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
     return signature
 
-def can_access_bucket(fs, bucket, user=None, headers=None, method='GET', url='', operation='r'):
-    rt = (True, 0)
-    if not bucket: return rt
-    # bucket_acl = get_acl(shelf, bucket)
-    user = user or user_from_headers(fs, headers or {}, method=method, url=url)
-    username = user['username'] if user else '*'
-    # if not fs.check_perm(bucket, perm=operation, owner=username):
-    #     rt = False, 401
-    return rt
 
 def available_buckets(fs, user=None):
     for i, count in fs.common_prefixes('/', '/'):

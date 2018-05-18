@@ -266,7 +266,7 @@ class ObjectView(HTTPMethodView):
             content_type = request.headers.get('Content-Type', 'application/octet-stream')
             body_md5 = request.headers.get('Content-MD5')
             buf = partial.open_part(partnum)
-            read_request(request, buf)
+            await read_request(request, buf)
             buf.close()
             headers['Etag'] = buf.meta['md5']
         elif request.method == 'GET':
@@ -301,7 +301,7 @@ class ObjectView(HTTPMethodView):
                         response.write('''
                         <Part>
                           <PartNumber>{partnum}</PartNumber>
-                          <ETag>{etag}</ETag>
+                          <ETag>&quot;{etag}&quot;</ETag>
                           <Size>{size}</Size>
                         </Part>
                         '''.format(partnum=partnum, etag=meta.get('md5'), size=meta['length']))
@@ -343,11 +343,10 @@ async def index(request):
 
 class SimpleAPI(HTTPMethodView):
     async def list(self, request, path):
-        listiter = request.app.fs.listdir(path)
+        listiter = request.app.fs.listdir(path, owner=request['username'])
         async def iterator(resp):
             for p in listiter:
-                resp.write(response.json_dumps(p))
-                resp.write('\n')
+                resp.write(response.json_dumps(p) + '\n')
         return response.StreamingHTTPResponse(iterator, status=200, content_type='application/json')
 
     async def get(self, request, path):
