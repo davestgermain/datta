@@ -133,6 +133,6 @@ class FSManager(BaseKVFSManager):
             txn.abort()
             raise
         else:
-            txn.commit().wait()
+            txn.commit()
 
 

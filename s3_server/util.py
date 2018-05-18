@@ -41,11 +41,26 @@ def good_response(request, fileobj, headers=None):
     ranger = None
     if brange:
         fileobj.st_size = fileobj.length
-        ranger = ContentRangeHandler(request, fileobj)
-        headers.update(ranger.headers)
-        fileobj.seek(ranger.start)
+        print(brange)
+        try:
+            ranger = ContentRangeHandler(request, fileobj)
+        except exceptions.ContentRangeError as e:
+            # maybe this isn't exactly invalid
+            try:
+                r = brange.split('=')[1].split('-')
+                if r[0] == r[1] and int(r[0]) == fileobj.length - 1:
+                    # it's just the end of the file
+                    to_read = 0
+                    fileobj.seek(0, 2)
+                else:
+                    raise e
+            except:
+                raise e
+        else:
+            headers.update(ranger.headers)
+            fileobj.seek(ranger.start)
         
-        to_read = ranger.size
+            to_read = ranger.size
         status = 206
     else:
         etag = fileobj.meta.get('md5') or fileobj.meta.get('sha256') or ''
