@@ -30,7 +30,7 @@ class BaseKVFSManager(BaseManager):
         if not isinstance(path, six.text_type):
             path = path.decode('utf8')
         if path.endswith(u'/'):
-            paths = [p['path'] for p in self.listdir(path, walk=True)]
+            paths = [p[u'path'] for p in self.listdir(path, walk=True)]
         else:
             paths = [path]
         history = []
@@ -64,7 +64,7 @@ class BaseKVFSManager(BaseManager):
                 rev = active.rev if rev is None else rev
         
             # renamed files have a reference to the old path
-            path = active.pop('path', path)
+            path = active.pop(u'path', path)
             if not isinstance(path, six.text_type):
                 path = path.decode('utf8')
             key = self.make_history_key(path)
@@ -85,12 +85,12 @@ class BaseKVFSManager(BaseManager):
         return val
 
     def save_file_data(self, path, meta, buf, cipher=None):
-        meta['bs'] = self.CHUNKSIZE
+        meta[u'bs'] = self.CHUNKSIZE
         rev = meta.get('rev', None)
-        meta['created'] = created = to_timestamp(meta['created'])
-        meta['path'] = path
+        meta[u'created'] = created = to_timestamp(meta[u'created'])
+        meta[u'path'] = path
         hist_key = self.make_history_key(path)
-        hash_algo = meta.pop('hash', None)
+        hash_algo = meta.pop(u'hash', None)
         if hash_algo:
             hasher = getattr(hashlib, hash_algo)()
         else:
@@ -98,9 +98,9 @@ class BaseKVFSManager(BaseManager):
         
         with self._begin(write=True) as tr:
             if rev is not None:
-                modified = meta['created']
+                modified = meta[u'created']
             else:
-                meta['rev'] = rev = self._get_next_rev(tr, path)
+                meta[u'rev'] = rev = self._get_next_rev(tr, path)
                 modified = time.time()
 
             # now write the chunks
@@ -125,7 +125,7 @@ class BaseKVFSManager(BaseManager):
                     tr = self._begin()
                     written = 0
             if hasher:
-                meta['meta'][hash_algo] = hasher.hexdigest()
+                meta[u'meta'][hash_algo] = hasher.hexdigest()
             hist = Record(meta)
             val = hist.to_bytes()
 
@@ -166,9 +166,9 @@ class BaseKVFSManager(BaseManager):
         if not isinstance(path, six.text_type):
             path = path.decode('utf8')
         if path:
-            if path[0] == '/':
+            if path[0] == u'/':
                 path = path[1:]
-            path = [p for p in path.split('/') if p]
+            path = [p for p in path.split(u'/') if p]
         return self._files[path]
     
     def _path_hash(self, path):
@@ -199,13 +199,13 @@ class BaseKVFSManager(BaseManager):
             nc = dirname.count(delimiter)
             for k, v in tr.get_range(start, end, limit=limit):
                 k = self._files.unpack(k)[0]
-                path = '/' + '/'.join(k)
+                path = u'/' + u'/'.join(k)
 
                 if not walk and path.count(delimiter) > nc:
                     continue
                 meta = Record.from_bytes(v)
 
-                meta.update(self.get_file_metadata(path, rev=meta['rev'], tr=tr))
+                meta.update(self.get_file_metadata(path, rev=meta[u'rev'], tr=tr))
                 if open_files:
                     yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta)
                 else:
@@ -241,9 +241,9 @@ class BaseKVFSManager(BaseManager):
             active = self.get_file_metadata(frompath, None)
             active['path'] = topath
             if record_move:
-                hist = Record({'path': frompath,
-                              'owner': owner,
-                              'meta': {'operation': 'mv', 'dest': topath}})
+                hist = Record({u'path': frompath,
+                              u'owner': owner,
+                              u'meta': {u'operation': u'mv', u'dest': topath}})
                 rev = active.rev + 1
                 tr[self.make_history_key(frompath)[rev]] = hist.to_bytes()
                 self._record_repo_history(tr, hist, rev)
@@ -277,10 +277,10 @@ class BaseKVFSManager(BaseManager):
                     created = to_timestamp(force_timestamp)
                 else:
                     created = time.time()
-                meta = Record({'path': path, 
-                        'owner': owner,
-                        'meta': {'operation': 'del'},
-                        'created': created,
+                meta = Record({u'path': path, 
+                        u'owner': owner,
+                        u'meta': {u'operation': u'del'},
+                        u'created': created,
                        })
                 tr[self.make_history_key(path)[rev]] = meta
                 self._record_repo_history(tr, meta, rev)
@@ -379,8 +379,8 @@ class BaseKVFSManager(BaseManager):
 
         if val != None:
             rec = Record.from_bytes(bytes(val))
-            if '__value' in rec:
-                return rec['__value']
+            if u'__value' in rec:
+                return rec[u'__value']
             else:
                 return rec
         else:
@@ -392,7 +392,7 @@ class BaseKVFSManager(BaseManager):
         """
         key = self._kv[path]
         if not isinstance(data, dict):
-            data = {'__value': data}
+            data = {u'__value': data}
         val = Record(data).to_bytes()
         with self._begin(write=True) as tr:
             tr[key] = val
@@ -410,16 +410,16 @@ class BaseKVFSManager(BaseManager):
         with self._begin() as tr:
             for k, v in tr.get_range(start, end):
                 k = self._files.unpack(k)[0]
-                path = '/' + '/'.join(k)
+                path = u'/' + u'/'.join(k)
                 path = path.replace(prefix, '', 1)
                 if path.count(delimiter) > 0:
                     pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
     def _perm_path(self, path):
-        if path[0] == '/':
+        if path[0] == u'/':
             path = path[1:]
-        path = [p for p in path.split('/') if p]
+        path = [p for p in path.split(u'/') if p]
         return path
 
     def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):

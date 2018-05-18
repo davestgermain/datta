@@ -60,7 +60,7 @@ class Record(dict):
                 k = k.decode('utf8')
             unpacked[k] = v
         obj = cls(unpacked)
-        for k in ('created', 'modified'):
+        for k in (u'created', u'modified'):
             v = obj.get(k, None)
             if v:
                 obj[k] = datetime.datetime.utcfromtimestamp(v)
@@ -264,7 +264,7 @@ class BaseManager(abc.ABC):
             yield vf
 
     def partial(self, path, id=None, **kwargs):
-        self.set_perm(u'/.partial/', Owner.SYS, 'rwd')
+        self.set_perm(u'/.partial/', Owner.SYS, Perm.ALL)
         part = Partial(self, path, id)
         if id is None:
             part.start(kwargs)
@@ -295,8 +295,8 @@ class Partial:
             id = uuid.uuid4().hex
         self.id = id
         self.dest = path
-        path = ['', '.partial'] + [p for p in path.split('/') if p] + [self.id]
-        self.path = '/'.join(path)
+        path = [u'', u'.partial'] + [p for p in path.split(u'/') if p] + [self.id]
+        self.path = u'/'.join(path)
 
     def start(self, meta):
         six.print_('starting', self.path, self.dest)
@@ -323,7 +323,7 @@ class Partial:
             for part in partnums:
                 with self.manager.open(os.path.join(self.path, str(part)), owner=Owner.SYS) as p:
                     six.print_(p.path)
-                    if p.path.endswith('/-1'):
+                    if p.path.endswith(u'/-1'):
                         fp.meta = p.meta
                         fp.content_type = p.content_type
                     else:
@@ -391,21 +391,21 @@ class VersionedFile(io.BufferedIOBase):
             self._buf.seek(0)
 
             hist_data = {
-                'meta': self.meta,
-                'owner': getattr(self, 'owner', None),
-                'length': length,
-                'hash': self.hash
+                u'meta': self.meta,
+                u'owner': getattr(self, 'owner', None),
+                u'length': length,
+                u'hash': self.hash
             }
             if not self.created:
                 self.created = datetime.datetime.utcnow()
-            hist_data['created'] = created = self.created
+            hist_data[u'created'] = created = self.created
             content_type = getattr(self, 'content_type', None)
             if not content_type:
                 content_type = mimetypes.guess_type(self.path)[0]
-            hist_data['content_type'] = content_type
+            hist_data[u'content_type'] = content_type
 
             if getattr(self, 'force_rev', None):
-                hist_data['rev'] = rev = self.force_rev
+                hist_data[u'rev'] = rev = self.force_rev
 
             self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)
 

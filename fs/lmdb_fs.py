@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 
 KeyValue = namedtuple('KeyValue', ('key', 'value'))
-    
+
 
 class DBProxy(object):
     def __init__(self, env, txn=None):
@@ -58,7 +58,6 @@ class DBProxy(object):
     def abort(self):
         self.txn.abort()
 
-        
     def __getitem__(self, key):
         if hasattr(key, 'key'):
             key = key.key()
@@ -75,7 +74,6 @@ class DBProxy(object):
             # do range clear
             for i in self.get_range(key.start, key.stop):
                 self.txn.delete(i.key)
-            # raise NotImplementedError()
         else:
             if hasattr(key, 'key'):
                 key = key.key()
@@ -88,23 +86,6 @@ class DBProxy(object):
             value = value.to_bytes()
         self.txn.put(key, value)
 
-
-def transactional(func):
-    def _wrapped(self, db, *args, **kwargs):
-        if not db.txn:
-            db = db.create_transaction(write=True)
-            created = True
-        else:
-            created = False
-        try:
-            return func(self, db, *args, **kwargs)
-        except:
-            db.txn.abort()
-            raise
-        else:
-            if created:
-                db.txn.commit()
-    return _wrapped
 
 
 class FSManager(BaseKVFSManager):
