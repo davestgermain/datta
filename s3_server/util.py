@@ -44,7 +44,7 @@ def good_response(request, fileobj, headers=None):
     ranger = None
     if brange:
         fileobj.st_size = fileobj.length
-        print(brange)
+        # print(brange)
         try:
             ranger = ContentRangeHandler(request, fileobj)
         except exceptions.ContentRangeError as e:
@@ -88,24 +88,24 @@ def good_response(request, fileobj, headers=None):
     if status >= 200 and (fileobj.length >= 65535 and (to_read == -1 or to_read >= 65535)):
         if to_read == -1:
             to_read = fileobj.length
-        async def iterator(response):
-            nonlocal to_read, fileobj
-            while to_read > 0:
-                chunk = await asynread(fileobj, min(to_read, 4096))
-                if chunk:
-                    response.write(chunk)
-                    to_read -= len(chunk)
-                else:
-                    break
-            fileobj.close()
+        async def iterator(resp):
+            nonlocal to_read
+            with fileobj:
+                while to_read > 0:
+                    chunk = await asynread(fileobj, min(to_read, 8192))
+                    if chunk:
+                        resp.write(chunk)
+                        to_read -= len(chunk)
+                    else:
+                        break
         return response.StreamingHTTPResponse(iterator, status=status, headers=headers, content_type=content_type)
     else:
         if to_read:
             # print('reading', to_read, body)
-            body = fileobj.read(to_read)
+            with fileobj:
+                body = fileobj.read(to_read)
             # print(body)
         headers['Content-Length'] = len(body)
-        fileobj.close()
         return response.HTTPResponse(body_bytes=body, headers=headers, status=status, content_type=content_type)
 
 

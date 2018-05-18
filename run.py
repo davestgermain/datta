@@ -36,4 +36,4 @@ wikiapp = Wiki(config).application
     
 if __name__ == '__main__':
     import werkzeug
-    werkzeug.run_simple('', 8282, wikiapp, use_reloader=True)
+    werkzeug.run_simple('', 8282, wikiapp, use_reloader=False)

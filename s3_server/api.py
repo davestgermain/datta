@@ -50,12 +50,12 @@ class BucketView(HTTPMethodView):
         marker = request.args.get('marker')
         # print(request.args)
         s3iter = list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, marker=marker, versions='versions' in request.query_string)
-        async def iterator(response):
+        async def iterator(resp):
             try:
                 for chunk in s3iter:
-                    response.write(chunk)
+                    resp.write(chunk)
             except KeyError:
-                response.write(aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).body)
+                resp.write(aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).body)
         # else:
         #     try:
         #         index_value = get_website_index(shelf, bucket, b'')
@@ -108,7 +108,7 @@ class ObjectView(HTTPMethodView):
         headers = {}
         status = 200
         path = self.path(bucket, key)
-        print('GETTING', path)
+        # print('GETTING', path)
         owner = request['username']
         try:
             fp = fs.open(path, owner=owner)
@@ -125,6 +125,7 @@ class ObjectView(HTTPMethodView):
         #         return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         for key, value in fp.meta.items():
             headers['x-amz-meta-%s' % key] = value if isinstance(value, str) else value.decode('utf8')
+        headers['x-amz-rev'] = str(fp.rev)
 
         return good_response(request,
                             fp,
@@ -179,7 +180,7 @@ class ObjectView(HTTPMethodView):
                 expiration = request.headers.get('Expires', None)
                 if expiration:
                     fp.meta['expiration'] = float(expiration)
-                read_request(request, fp)
+                await read_request(request, fp)
                 print('OWNER IS', fp.owner)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
@@ -318,9 +319,6 @@ class ObjectView(HTTPMethodView):
         return xml_response(body, iterator=iterator, headers=headers)
 
 
-bp.add_route(ObjectView.as_view(), '/<bucket>/<key:path>')
-bp.add_route(BucketView.as_view(), '/<bucket>')
-
 @bp.route('/')
 async def index(request):
     fs = request.app.fs
@@ -341,3 +339,79 @@ async def index(request):
             response.write(data)
         response.write('</Buckets></ListAllMyBucketsResult>')
     return xml_response(iterator=stream)
+
+
+class SimpleAPI(HTTPMethodView):
+    async def list(self, request, path):
+        listiter = request.app.fs.listdir(path)
+        async def iterator(resp):
+            for p in listiter:
+                resp.write(response.json_dumps(p))
+                resp.write('\n')
+        return response.StreamingHTTPResponse(iterator, status=200, content_type='application/json')
+
+    async def get(self, request, path):
+        path = unquote('/' + path)
+        if path.endswith('/'):
+            return await self.list(request, path)
+
+        fs = request.app.fs
+        rev = request.args.get('rev', None)
+        if rev:
+            rev = int(rev)
+        try:
+            fp = fs.open(path, owner=request['username'], rev=rev)
+        except FileNotFoundError:
+            raise exceptions.NotFound(path)
+        except PermissionError:
+            raise exceptions.Forbidden(path)
+        headers = {}
+        for key, value in fp.meta.items():
+            headers['x-meta-%s' % key] = value if isinstance(value, str) else value.decode('utf8')
+        headers['x-rev'] = str(fp.rev)
+
+        return good_response(request,
+                            fp,
+                            headers=headers)
+            
+
+    async def put(self, path):
+        path = unquote('/' + path)
+        fs = request.app.fs
+        ctype = request.headers.get('content-type', '')
+        print('UPLOADING', path, request.headers, ctype)
+        try:
+            with fs.open(path, mode='w', owner=request['username']) as fp:
+                fp.do_hash('md5')
+                fp.content_type = ctype
+                for metakey in request.headers:
+                    if metakey.startswith('x-amz-meta-'):
+                        metavalue = request.headers[metakey]
+                        metakey = metakey[11:]
+                        fp.meta[metakey] = metavalue
+                expiration = request.headers.get('Expires', None)
+                if expiration:
+                    fp.meta['expiration'] = float(expiration)
+                await read_request(request, fp)
+        except FileNotFoundError:
+            raise exceptions.NotFound(path)
+        except PermissionError:
+            raise exceptions.Forbidden(path)
+        return response.text(fp.meta['md5'])
+
+    async def delete(self, path):
+        path = unquote('/' + path)
+        fs = request.app.fs
+        try:
+            if request.app.fs.delete(path, owner=request['username']):
+                return response.text('')
+            else:
+                raise exceptions.NotFound(path)
+        except PermissionError:
+            raise exceptions.Forbidden(path)
+        return response.text('')
+
+
+bp.add_route(SimpleAPI.as_view(), '/.simple/v1/<path:path>')
+bp.add_route(ObjectView.as_view(), '/<bucket>/<key:path>')
+bp.add_route(BucketView.as_view(), '/<bucket>')

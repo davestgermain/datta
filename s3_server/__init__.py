@@ -31,11 +31,7 @@ async def setup_routes(app, loop):
 
 @app.middleware('request')
 async def get_user(request):
-    request['user'] = auth.user_from_headers(
-                                    app.fs,
-                                    request.headers,
-                                    method=request.method,
-                                    url=request.url)
+    request['user'] = auth.user_from_request(app.fs, request)
     if request['user']:
         request['username'] = request['user']['username']
     else:

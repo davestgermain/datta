@@ -3,9 +3,13 @@ import hmac
 import uuid
 import codecs
 import re
-import secrets
 from datetime import datetime
 from urllib.parse import urlsplit
+try:
+    import secrets
+except ImportError:
+    # only available >3.6
+    from datta.fs.ext import secrets
 
 
 AUTH_BUCKET = '.auth'
@@ -143,7 +147,8 @@ def get_user(fs, username):
 SIG_RE = re.compile('Signature=(.*)$')
 HEAD_RE = re.compile('SignedHeaders=(.*),')
 
-def user_from_headers(fs, headers, method='GET', url=''):
+def user_from_request(fs, request):
+    headers = request.headers
     auth_header = headers.get('Authorization', '')
     auth_user, auth_pass = get_http_auth(auth_header)
 
@@ -158,10 +163,10 @@ def user_from_headers(fs, headers, method='GET', url=''):
                     to_sign = {h.title(): headers[h] for h in HEAD_RE.search(auth_header).group(1).split(';')}
                 except (KeyError, IndexError) as e:
                     print('header problem!', headers, e)
-                    to_sign = {}
+                    return
 
                 secret_key = user['secret_key']
-                gen_sig = get_aws_signature(url, method, headers, to_sign, secret_key, date)
+                gen_sig = get_aws_signature(request.url, request.method, headers, to_sign, secret_key, date)
 
                 signature = SIG_RE.search(auth_header).group(1)
                 if gen_sig == signature:

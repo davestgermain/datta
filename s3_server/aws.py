@@ -1,7 +1,10 @@
 import os.path
 
 
-def read_request(request, write_buf):
+async def write_async(write_buf, chunk):
+    write_buf.write(chunk)
+
+async def read_request(request, write_buf):
     """
     Reads a chunked AWS request, and writes into write_buf
     """
@@ -21,12 +24,13 @@ def read_request(request, write_buf):
             size = int(size, 16)
             if size == 0:
                 break
-            write_buf.write(body[:size])
+            await write_async(write_buf, body[:size])
             # chunk ends with \r\n
             body = body[size + 2:]
     else:
-        write_buf.write(request.body)
-    
+        await write_async(write_buf, request.body)
+
+
 def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
     is_truncated = 'false'
     contents = []
