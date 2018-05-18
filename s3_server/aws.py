@@ -1,5 +1,6 @@
 import os.path
 
+
 def read_request(request, write_buf):
     """
     Reads a chunked AWS request, and writes into write_buf
@@ -47,9 +48,11 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
         else:
             rows = [row]
         for row in rows:
-            # print(row)
+            if row.get('content_type') == 'application/x-directory':
+                continue
             modified = row.get('modified', row.created).isoformat() + 'Z'
-            etag = row.meta.get('sha256') or row.meta.get('md5') or 'default'
+            created = row.get('created').isoformat() + 'Z'
+            etag = row.meta.get('md5') or row.meta.get('sha256') or 'default'
             owner = row.get('owner', '') or ''
             if not isinstance(owner, str):
                 owner = owner.decode('utf8')
@@ -67,7 +70,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
     <Size>{size}</Size>
     <StorageClass>STANDARD</StorageClass>
     <Owner><DisplayName>{owner}</DisplayName></Owner>
-    '''.format(key=key, size=row.get('length', 0), modified=modified, etag=etag, owner=owner)
+    '''.format(key=key, size=row.get('length', 0), created=created, modified=modified, etag=etag, owner=owner)
             contents.append(doc)
             if versions:
                 contents.append('<VersionID>{rev}</VersionID>'.format(rev=row.rev))
@@ -81,6 +84,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
         if len(contents) == maxkeys:
             is_truncated = 'true'
             break
+
     return contents, last_key, is_truncated
 
 def list_available_buckets(fs, username):

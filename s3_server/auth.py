@@ -6,7 +6,6 @@ import re
 import secrets
 from datetime import datetime
 from urllib.parse import urlsplit
-from minio import signer
 
 
 AUTH_BUCKET = '.auth'
@@ -82,7 +81,7 @@ def register(fs, user=None, password=None):
     user_obj = {
         'username': user,
         'password': (encoded, salt, iterations),
-        'secret_key': secrets.token_urlsafe(32)
+        'secret_key': secrets.token_urlsafe(30)
     }
     user_path = '/.auth/%s' % user
     if not fs[user_path]:
@@ -162,33 +161,55 @@ def user_from_headers(fs, headers, method='GET', url=''):
                     to_sign = {}
 
                 secret_key = user['secret_key']
-    
-                sha256 = headers.get('x-amz-content-sha256', '')
-                region = 'us-east-1'
-                parsed_url = urlsplit(url)
-                signed_headers = signer.get_signed_headers(to_sign)
-                canonical_req = signer.generate_canonical_request(method,
-                                                           parsed_url,
-                                                           to_sign,
-                                                           signed_headers,
-                                                           sha256)
-
-                string_to_sign = signer.generate_string_to_sign(date, region,
-                                                         canonical_req)
-                signing_key = signer.generate_signing_key(date, region, secret_key)
-                gen_sig = hmac.new(signing_key, string_to_sign.encode('utf-8'),
-                                     hashlib.sha256).hexdigest()
+                gen_sig = get_aws_signature(url, method, headers, to_sign, secret_key, date)
 
                 signature = SIG_RE.search(auth_header).group(1)
-
                 if gen_sig == signature:
-                    # print('USER ID', user)
+                    print('USER ID', user['username'])
                     return user
-                # else:
-                #     print(signed_headers, auth_header, gen_headers['Authorization'])
+                else:
+                    print(signature, gen_sig)
             elif check_password(user, auth_pass):
                 return user
     return None
+
+
+def sign(key, msg):
+    return hmac.new(key, msg.encode('utf8'), hashlib.sha256).digest()
+
+def get_aws_signature(url, method, headers, signed_headers, secret_key, date, service='s3', region='us-east-1'):
+    datestamp = date.strftime('%Y%m%d')
+    amzdate = date.strftime('%Y%m%dT%H%M%SZ')
+
+    parsed_url = urlsplit(url)
+
+    canonical_q = []
+    for q in parsed_url.query.strip().split('&'):
+        if q and '=' not in q:
+            q += '='
+        canonical_q.append(q)
+    canonical_q.sort()
+    canonical_q = '&'.join(canonical_q)
+    canonical_req = [method, parsed_url.path, canonical_q]
+    for header in sorted(signed_headers):
+        value = headers[header.title()]
+        value = ' '.join(str(value).strip().split())
+        canonical_req.append('%s:%s' % (header.lower().strip(), value))
+    canonical_req.append('')
+    canonical_req.append(';'.join([s.lower() for s in signed_headers]))
+    canonical_req.append(headers['X-Amz-Content-Sha256'])
+    canonical_req = '\n'.join(canonical_req)
+
+    scope = '%s/%s/%s/aws4_request' % (datestamp, region, service)
+    string_to_sign = '\n'.join(['AWS4-HMAC-SHA256', amzdate, scope, hashlib.sha256(canonical_req.encode('utf8')).hexdigest()])
+
+    kd = sign(('AWS4' + secret_key).encode('utf8'), datestamp)
+    kr = sign(kd, region)
+    ks = sign(kr, service)
+    signing_key = sign(ks, 'aws4_request')
+
+    signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+    return signature
 
 def can_access_bucket(fs, bucket, user=None, headers=None, method='GET', url='', operation='r'):
     rt = (True, 0)

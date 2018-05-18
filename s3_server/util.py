@@ -45,10 +45,7 @@ def good_response(request, fileobj, headers=None):
         headers.update(ranger.headers)
         fileobj.seek(ranger.start)
         
-        # start, end = brange.replace('bytes=','').split('-')
-        # start, end = int(start), int(end)
         to_read = ranger.size
-        # print(brange, to_read)
         status = 206
     else:
         etag = fileobj.meta.get('md5') or fileobj.meta.get('sha256') or ''
@@ -73,7 +70,6 @@ def good_response(request, fileobj, headers=None):
     if status >= 200 and (fileobj.length >= 65535 and (to_read == -1 or to_read >= 65535)):
         if to_read == -1:
             to_read = fileobj.length
-        headers['Content-Length'] = to_read
         async def iterator(response):
             nonlocal to_read, fileobj
             while to_read > 0:
@@ -94,18 +90,6 @@ def good_response(request, fileobj, headers=None):
         fileobj.close()
         return response.HTTPResponse(body_bytes=body, headers=headers, status=status, content_type=content_type)
 
-# def msg_response(content=None, status=200, iterator=None, **kwargs):
-#     content_type = 'application/msgpack'
-#     if iterator is not None:
-#         iterator, kind = iterator
-#         iterator = serializer.serialize_iterator(iterator, kind)
-#         async def streamer(response):
-#             for chunk in iterator:
-#                 response.write(chunk)
-#         return response.stream(streamer, content_type=content_type, **kwargs)
-#     else:
-#         body, content_type = serializer.serialize(content)
-#         return response.raw(body, content_type=content_type, status=status, **kwargs)
 
 def xml_response(body=None, status=200, iterator=None, **kwargs):
     if iterator is not None:
@@ -117,7 +101,7 @@ def aws_error_response(status, code, message, bucket='', key=''):
     request_id = next(counter)
     message = ERROR_XML.format(**locals())
     resp = xml_response(message, status=status)
-    if status in (401, 403):
-        resp.headers['WWW-Authenticate'] = 'Basic realm="Auth Required"'
+    # if status in (401, 403):
+    #     resp.headers['WWW-Authenticate'] = 'Basic realm="Auth Required"'
     return resp
 

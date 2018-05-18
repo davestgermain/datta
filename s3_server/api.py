@@ -108,10 +108,12 @@ class ObjectView(HTTPMethodView):
         headers = {}
         status = 200
         path = self.path(bucket, key)
+        print('GETTING', path)
         owner = request['username']
         try:
             fp = fs.open(path, owner=owner)
         except FileNotFoundError:
+            path
             return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
@@ -159,11 +161,16 @@ class ObjectView(HTTPMethodView):
         #         value = shelf.get_from_bucket(copy_bucket, copy_key)
         #         copy = True
         path = self.path(bucket, key)
-
-        ctype = request.headers.get('Content-Type', '')
+        if path.endswith('/'):
+            # directories are a no-op
+            # return response.text('')
+            path = path[:-1]
+        ctype = request.headers.get('content-type', '')
+        print('UPLOADING', path, request.headers, ctype)
         try:
             with fs.open(path, mode='w', owner=owner) as fp:
                 fp.do_hash('md5')
+                fp.content_type = ctype
                 for metakey in request.headers:
                     if metakey.startswith('x-amz-meta-'):
                         metavalue = request.headers[metakey]
@@ -209,13 +216,16 @@ class ObjectView(HTTPMethodView):
         iterator = None
         headers = {}
         body = ''
-        print('doing multipart upload', bucket, key, request.method, upload_id, partnum)
         path = self.path(bucket, key)
         owner = request['username']
+        print('doing multipart upload', path, request.method, upload_id, partnum, owner)
 
         if not upload_id:
             #start
-            partial = fs.partial(path, content_type=request.headers.get('content-type', 'application/octet-stream'), owner=owner)
+            try:
+                partial = fs.partial(path, content_type=request.headers.get('content-type', 'application/octet-stream'), owner=owner)
+            except PermissionError:
+                return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
             body = '''<?xml version="1.0" encoding="UTF-8"?>
             <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
               <Bucket>{bucket}</Bucket>
@@ -225,7 +235,10 @@ class ObjectView(HTTPMethodView):
         elif request.method == 'POST':
             # complete request
             tree = get_xml(request)
-            partial = fs.partial(path, id=upload_id)
+            try:
+                partial = fs.partial(path, id=upload_id)
+            except PermissionError:
+                return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
             async def iterator(response):
                 partnums = []
                 for part in tree.findall('{http://s3.amazonaws.com/doc/2006-03-01/}Part/{http://s3.amazonaws.com/doc/2006-03-01/}PartNumber'):
