@@ -9,9 +9,10 @@ def test_get_default_manager():
     man = fs.get_manager()
     assert man.dsn == 'fdb'
 
-class FDBTests(unittest.TestCase):
+class FsTests(unittest.TestCase):
+    dsn = 'fdb'
     def setUp(self):
-        self.man = fs.get_manager('fdb')
+        self.man = fs.get_manager(self.dsn)
         self.man.set_perm('/test', 'test', 'rwd')
 
     def tearDown(self):
@@ -29,8 +30,8 @@ class FDBTests(unittest.TestCase):
         fp.close()
         
         read = self.man.open('/test/create', owner='test', mode='r')
-        self.assertEquals(read.rev, 0)
-        self.assertEquals(data.encode('utf8'), read.read())
+        self.assertEqual(read.rev, 0)
+        self.assertEqual(data.encode('utf8'), read.read())
         self.assertTrue(fp.meta['testing'])
         fp.close()
         self.assertTrue(fp.closed)
@@ -44,7 +45,7 @@ class FDBTests(unittest.TestCase):
         created.close()
         self.man.rename(fname, toname, owner='test')
         renamed = self.man.open(toname, owner='test', mode='r')
-        self.assertEquals(renamed.meta['testing'], ts)
+        self.assertEqual(renamed.meta['testing'], ts)
     
     def test_random_read(self):
         fname = '/test/randomread'
@@ -84,9 +85,20 @@ class FDBTests(unittest.TestCase):
 
     def test_kv(self):
         self.man['testkey'] = 1
-        self.assertEquals(self.man['testkey'], 1)
+        self.assertEqual(self.man['testkey'], 1)
         del self.man['testkey']
-        self.assertEquals(self.man['testkey'], None)
+        self.assertEqual(self.man['testkey'], None)
         self.man['testkey'] = {'complex': True, 'Structure': [1,2,3], 'val': -1.3}
-        self.assertEquals(self.man['testkey']['val'], -1.3)
+        self.assertEqual(self.man['testkey']['val'], -1.3)
         del self.man['testkey']
+
+class LMDBTests(FsTests):
+    dsn = 'lmdb:///tmp/testfs/'
+    def tearDown(self):
+        tdir = '/tmp/testfs/'
+        for p in os.listdir(tdir):
+            p = os.path.join(tdir, p)
+            os.unlink(p)
+
+if __name__ == '__main__':
+    unittest.main()

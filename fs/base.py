@@ -46,7 +46,7 @@ class Record(dict):
     @classmethod
     def from_bytes(cls, data):
         unpacked = {}
-        for k, v in msgpack.unpackb(data, encoding='utf8').items():
+        for k, v in msgpack.unpackb(data, raw=False).items():
             if not isinstance(k, six.text_type):
                 k = k.decode('utf8')
             unpacked[k] = v
@@ -58,7 +58,7 @@ class Record(dict):
         return obj
 
     def __bytes__(self):
-        return msgpack.packb(self, encoding='utf8', use_bin_type=True)
+        return msgpack.packb(self, use_bin_type=False)
     
     to_bytes = as_foundationdb_value = __bytes__
 
@@ -93,10 +93,17 @@ class BaseManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_file_chunks(self, path, rev, chunk=None, cipher=None):
+    def get_file_chunks(self, path, rev, cipher=None):
         """
         Return iterator of file chunks
         or the specified chunk
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_file_chunk(self, path, rev, chunk, cipher=None):
+        """
+        Return single chunk
         """
         pass
 
@@ -125,7 +132,7 @@ class BaseManager(abc.ABC):
     def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, order=None, cols=None, delimiter='/'):
         pass
 
-    def copyfile(self, filename_or_fileobj, topath, content_type=None):
+    def copyfile(self, filename_or_fileobj, topath, content_type=None, owner=None):
         if isinstance(filename_or_fileobj, six.string_types):
             filename_or_fileobj = open(filename_or_fileobj, 'rb')
         if not content_type and hasattr(filename_or_fileobj, 'name'):
@@ -133,7 +140,7 @@ class BaseManager(abc.ABC):
             to_ctype = mimetypes.guess_type(topath)[0]
             if to_ctype != content_type:
                 content_type = to_ctype
-        with self.open(topath, mode=Perm.write) as tofile:
+        with self.open(topath, mode=Perm.write, owner=owner) as tofile:
             tofile.content_type = content_type
             while 1:
                 data = filename_or_fileobj.read(8192)
@@ -244,6 +251,7 @@ class BaseManager(abc.ABC):
             yield vf
 
     def partial(self, path, id=None, **kwargs):
+        self.set_perm('/.partial/', 'sys', 'rwd')
         part = Partial(self, path, id)
         if id is None:
             part.start(kwargs)
@@ -428,33 +436,34 @@ class VersionedFile(io.BufferedIOBase):
     def read(self, size=-1):
         if self.mode != Perm.read:
             return
+        buf = bytearray()
         if self._pos == 0 and size == -1:
             # optimization for reading the whole file
-            buf = b''
+            i = 0
             for chunk in self.manager.get_file_chunks(self.path, self.rev, cipher=self._cipher):
-                buf += chunk
+                i+= 1
+                buf.extend(chunk)
             self._pos = len(buf)
-            return buf
+            return bytes(buf)
 
         length = size if size > 0 else self.length
-        buf = b''
         where, pos = divmod(self._pos, self.bs)
 
         if self._curr_chunk_num != where:
-            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where, cipher=self._cipher)
+            self._curr_chunk = self.manager.get_file_chunk(self.path, self.rev, where, cipher=self._cipher)
             self._curr_chunk_num = where
         buf += self._curr_chunk[pos:]
         while len(buf) < length:
             where += 1
-            self._curr_chunk = self.manager.get_file_chunks(self.path, self.rev, where, cipher=self._cipher)
+            self._curr_chunk = self.manager.get_file_chunk(self.path, self.rev, where, cipher=self._cipher)
             if self._curr_chunk is None:
                 self._curr_chunk_num = None
                 break
-            buf += self._curr_chunk
+            buf.extend(self._curr_chunk)
             self._curr_chunk_num = where
         read = buf[:length]
         self._pos += len(read)
-        return read
+        return bytes(read)
 
     async def aread(self, size=-1):
         return self.read(size)

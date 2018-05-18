@@ -17,6 +17,9 @@ def get_manager(dsn=None, debug=False, **kwargs):
     if dsn not in MANAGERS:
         if dsn == 'fdb':
             module = 'datta.fs.fdb_fs'
+        elif dsn.startswith('lmdb://'):
+            module = 'datta.fs.lmdb_fs'
+            dsn = dsn.replace('lmdb://', '', 1)
         else:
             module = 'datta.fs.cdb_fs'
         MANAGERS[dsn] = importlib.import_module(module).FSManager(dsn, debug=debug, **kwargs)

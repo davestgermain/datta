@@ -127,7 +127,7 @@ def main():
                                 break
                             tp.write(block)
             else:
-                if not man.copyfile(args.frompath, args.topath):
+                if not man.copyfile(args.frompath, args.topath, owner=owner):
                     return -1
     elif args.command == 'rm':
         if args.recurse:
