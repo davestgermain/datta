@@ -1,6 +1,6 @@
-from datta.wiki import Wiki, WikiConfig
-from datta.multiwiki import MultiWiki
-from datta import dbstorage, dbsearch
+from . import Wiki, WikiConfig
+from .multi import MultiWiki
+from . import dbstorage, dbsearch
 # import hatta import Wiki, WikiConfig
 
 dsn = 'cockroachdb://root@localhost:26257/wiki?sslcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.crt&sslkey=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.key&sslmode=verify-full&sslrootcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fca.crt'

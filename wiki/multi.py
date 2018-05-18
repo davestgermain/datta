@@ -1,5 +1,5 @@
-from datta.wiki import Wiki
-from datta import dbstorage, dbsearch
+from . import Wiki
+from . import dbstorage, dbsearch
 from copy import copy
 import os.path
 

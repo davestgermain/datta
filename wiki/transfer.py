@@ -1,5 +1,4 @@
-import dbstorage
-import dbsearch
+from . import dbstorage, dbsearch
 import hatta.storage
 import wikicache
 import hatta
