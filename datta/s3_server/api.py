@@ -41,7 +41,7 @@ class BucketView(HTTPMethodView):
                 path += '/' + prefix
             return xml_response(list_partials(fs, path))
         elif qs in ('versioning', 'versioning='):
-            status = config.get('versioning', True) and 'Enabled' else 'Disabled'
+            status = 'Enabled' if config.get('versioning', True) else 'Disabled'
             vxml = '''
             <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
             '''.format(status=status)

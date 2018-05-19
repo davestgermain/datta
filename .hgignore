@@ -4,4 +4,6 @@ __pycache__/*
 .DS_Store
 .coverage
 htmlcov/*
-pgshelve.egg-info
+build/*
+dist/*
+datta.egg-info

@@ -1,0 +1,4 @@
+sanic
+lmdb
+msgpack
+whoosh
