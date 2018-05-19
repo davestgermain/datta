@@ -1,4 +1,4 @@
-from .base import BaseManager, Record, PermissionError, Perm, VersionedFile
+from .base import BaseManager, Record, PermissionError, Perm, Owner, VersionedFile
 import os, os.path
 import hashlib
 import msgpack
@@ -423,6 +423,8 @@ class BaseKVFSManager(BaseManager):
         return path
 
     def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
+        if owner == Owner.ROOT:
+            return True
         pars = [owner, perm]
         upars = [u'*', perm]
         sp = self._perm_path(path)

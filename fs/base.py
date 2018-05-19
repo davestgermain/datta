@@ -36,6 +36,7 @@ Perm = namedtuple('Perm', ['read', 'write', 'delete', 'ALL'])(read=u'r', write=u
 class Owner:
     ALL = u'*'
     SYS = u'sys'
+    ROOT = u'root'
 
 
 class Record(dict):
@@ -82,7 +83,8 @@ class BaseManager(abc.ABC):
         self.dsn = dsn
         self.options = kwargs
         self._setup()
-    
+        self.set_perm(u'/', Owner.ROOT, Perm.ALL)
+
     def __repr__(self):
         return '%s%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn)
 
@@ -246,12 +248,17 @@ class BaseManager(abc.ABC):
         """
         raise NotImplementedError()
 
-    def open(self, path, mode=Perm.read, owner=Owner.ALL, rev=None, version=None):
+    def open(self, path, mode=Perm.read, owner=Owner.ALL, rev=None):
         """
         Open the file at path
         """
         path = os.path.normpath(path)
-        return VersionedFile(self, path, mode=mode, rev=rev, requestor=owner, version=version)
+        vf = VersionedFile(self, path, mode=mode, rev=rev, requestor=owner, version=version)
+        if mode == Perm.write:
+            config = self.get_path_config(path)
+            if not config.get('versioning', True):
+                vf.force_rev = 0
+        return vf
 
     def open_many(self, paths, mode=Perm.read, owner=Owner.ALL):
         """
@@ -262,6 +269,32 @@ class BaseManager(abc.ABC):
             meta = self.get_file_metadata(path, None)
             vf = VersionedFile(self, path, requestor=owner, mode=mode, **meta)
             yield vf
+
+    def get_path_config(self, path, create=False, **kwargs):
+        """
+        
+        """
+        sp = path.split('/')
+        if len(sp) > 2:
+            configpath = '/'.join(sp[:2])
+            try:
+                with self.open(configpath, owner=Owner.ROOT) as fp:
+                    return Record.from_bytes(fp.read())
+            except FileNotFoundError:
+                if create:
+                    self.set_path_config(path, kwargs)
+        return Record(kwargs)
+
+    def set_path_config(self, path, config):
+        """
+        
+        """
+        configpath = '/'.join(path.split('/')[:2])
+        if not isinstance(config, Record):
+            config = Record(config)
+        with self.open(configpath, mode=Perm.write, owner=Owner.ROOT) as fp:
+            fp.content_type = u'application/x-directory'
+            fp.write(config.to_bytes())
 
     def partial(self, path, id=None, **kwargs):
         self.set_perm(u'/.partial/', Owner.SYS, Perm.ALL)

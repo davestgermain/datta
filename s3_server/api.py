@@ -30,6 +30,7 @@ class BucketView(HTTPMethodView):
         qs = request.query_string
         prefix = request.args.get('prefix', '')
         
+        config = fs.get_path_config('/' + bucket)
         if qs in ('location=', 'location'):
             return xml_response('<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
         elif qs == 'policy=':
@@ -40,7 +41,11 @@ class BucketView(HTTPMethodView):
                 path += '/' + prefix
             return xml_response(list_partials(fs, path))
         elif qs in ('versioning', 'versioning='):
-            return xml_response('<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>')
+            status = config.get('versioning', True) and 'Enabled' else 'Disabled'
+            vxml = '''
+            <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
+            '''.format(status=status)
+            return xml_response(vxml)
         elif qs in ('logging', 'logging='):
             return xml_response('')
 
