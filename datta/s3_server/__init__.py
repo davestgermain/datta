@@ -30,7 +30,6 @@ async def get_user(request):
         request['username'] = None
 
 
-@app.middleware('request')
 async def handle_wildcard(request):
     if not request.host.startswith(app.root_host):
         # this is a wildcard request
@@ -47,7 +46,7 @@ def main():
     parser = argparse.ArgumentParser(prog='datta.s3_server', description='start the s3 compatible server')
     parser.add_argument('-d', default='fdb', dest='dsn', help='DSN for file manager')
     parser.add_argument('--debug', default=False, dest='debug', action='store_true')
-    parser.add_argument('-r', dest='host', default='localhost', help='Root domain')
+    parser.add_argument('-r', dest='host', default='', help='Root domain')
     parser.add_argument('-c', dest='cert_path', help='Path to SSL certificates')
     parser.add_argument('-p', type=int, default=8484, help='port', dest='port')
     parser.add_argument('-a', default='127.0.0.1', help='addr', dest='addr')
@@ -59,6 +58,9 @@ def main():
         app.debug = True
 
     app.root_host = args.host
+    if app.root_host:
+        app.middleware('request')(handle_wildcard)
+        
     app.fs = get_manager(args.dsn, event_model='asyncio')
     if args.cert_path:
         import ssl

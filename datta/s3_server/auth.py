@@ -170,7 +170,7 @@ def user_from_request(fs, request):
 
                 signature = SIG_RE.search(auth_header).group(1)
                 if gen_sig == signature:
-                    print('USER ID', user['username'])
+                    # print('USER ID', user['username'])
                     return user
                 else:
                     print(signature, gen_sig)
