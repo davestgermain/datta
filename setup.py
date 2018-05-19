@@ -9,9 +9,10 @@ extra = {}
 
 setup(
     name="datta",
-    version='1.0',
-    packages=['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki'],
-    provides=['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki'],
+    use_scm_version=True,
+    setup_requires=['setuptools_scm'],
+    packages=['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki', 'datta.fs.ext'],
+    provides=['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki', 'datta.fs.ext'],
     description='',
     author='Dave St.Germain',
     author_email='dave@st.germa.in',
