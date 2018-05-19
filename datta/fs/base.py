@@ -253,7 +253,7 @@ class BaseManager(abc.ABC):
         Open the file at path
         """
         path = os.path.normpath(path)
-        vf = VersionedFile(self, path, mode=mode, rev=rev, requestor=owner, version=version)
+        vf = VersionedFile(self, path, mode=mode, rev=rev, requestor=owner)
         if mode == Perm.write:
             config = self.get_path_config(path)
             if not config.get('versioning', True):
