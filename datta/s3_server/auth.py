@@ -5,6 +5,7 @@ import codecs
 import re
 from datetime import datetime
 from urllib.parse import urlsplit
+from sanic.log import error_logger
 try:
     import secrets
 except ImportError:
@@ -160,20 +161,20 @@ def user_from_request(fs, request):
                 date = datetime.strptime(headers['x-amz-date'], "%Y%m%dT%H%M%SZ")
                 assert (datetime.utcnow() - date).seconds <= 120
                 try:
-                    to_sign = {h.title(): headers[h] for h in HEAD_RE.search(auth_header).group(1).split(';')}
+                    to_sign = sorted([(h.lower(), headers[h]) for h in HEAD_RE.search(auth_header).group(1).split(';')])
                 except (KeyError, IndexError) as e:
-                    print('header problem!', headers, e)
+                    error_logger.exception('header problem %s' % headers)
                     return
 
                 secret_key = user['secret_key']
-                gen_sig = get_aws_signature(request.url, request.method, headers, to_sign, secret_key, date)
+                gen_sig = get_aws_signature(request.url, request.method, to_sign, secret_key, date, sha256=headers.get('x-amz-content-sha256', ''))
 
                 signature = SIG_RE.search(auth_header).group(1)
                 if gen_sig == signature:
                     # print('USER ID', user['username'])
                     return user
                 else:
-                    print(signature, gen_sig)
+                    error_logger.error('BAD SIGNATURE', gen_sig, signature, headers)
             elif check_password(user, auth_pass):
                 return user
     return None
@@ -182,7 +183,7 @@ def user_from_request(fs, request):
 def sign(key, msg):
     return hmac.new(key, msg.encode('utf8'), hashlib.sha256).digest()
 
-def get_aws_signature(url, method, headers, signed_headers, secret_key, date, service='s3', region='us-east-1'):
+def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3', region='us-east-1', sha256=''):
     datestamp = date.strftime('%Y%m%d')
     amzdate = date.strftime('%Y%m%dT%H%M%SZ')
 
@@ -196,13 +197,12 @@ def get_aws_signature(url, method, headers, signed_headers, secret_key, date, se
     canonical_q.sort()
     canonical_q = '&'.join(canonical_q)
     canonical_req = [method, parsed_url.path, canonical_q]
-    for header in sorted(signed_headers):
-        value = headers[header.title()]
-        value = ' '.join(str(value).strip().split())
-        canonical_req.append('%s:%s' % (header.lower().strip(), value))
+    for header, value in signed_headers:
+        value = ' '.join(value.strip().split())
+        canonical_req.append('%s:%s' % (header.strip(), value))
     canonical_req.append('')
-    canonical_req.append(';'.join([s.lower() for s in signed_headers]))
-    canonical_req.append(headers['X-Amz-Content-Sha256'])
+    canonical_req.append(';'.join([s[0] for s in signed_headers]))
+    canonical_req.append(sha256)
     canonical_req = '\n'.join(canonical_req)
 
     scope = '%s/%s/%s/aws4_request' % (datestamp, region, service)
