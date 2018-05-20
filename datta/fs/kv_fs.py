@@ -51,7 +51,9 @@ class BaseKVFSManager(BaseManager):
         return history
 
     def get_file_metadata(self, path, rev, tr=None):
-        with self._begin() as tr:
+        if tr is None:
+            tr = self._begin()
+        with tr:
             active = tr[self._make_file_key(path)]
             exists = active != None
             if rev is None and not exists:
@@ -416,44 +418,35 @@ class BaseKVFSManager(BaseManager):
                     pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
+    def get_acl(self, path, tr=None):
+        tr = tr or self._begin()
+        ppath = self._perm_path(path)
+        basekey = self._perms
+        acl = None
+        with tr:
+            while ppath:
+                key = basekey[ppath]
+                acl = tr[key]
+                if acl:
+                    acl = Record.from_bytes(acl)
+                    break
+                ppath.pop(-1)
+        return acl
+
+    def set_acl(self, path, acl):
+        ppath = self._perm_path(path)
+        key = self._perms[ppath]
+        val = Record(acl).to_bytes()
+        with self._begin(write=True) as tr:
+            if acl:
+                tr[key] = val
+            else:
+                del tr[key]
+
     def _perm_path(self, path):
         if path[0] == u'/':
             path = path[1:]
         path = [p for p in path.split(u'/') if p]
         return path
 
-    def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
-        if owner == Owner.ROOT:
-            return True
-        pars = [owner, perm]
-        upars = [u'*', perm]
-        sp = self._perm_path(path)
-        with self._begin() as tr:
-            while sp:
-                key = self._perms[pars + sp]
-                if tr[key] == b'':
-                    return True
-                key = self._perms[upars + sp]
-                if tr[key] == b'':
-                    return True
-                sp.pop(-1)
-        if raise_exception:
-            raise PermissionError((path, owner, perm))
-        else:
-            return False
 
-    def set_perm(self, path, owner, perm=Perm.read):
-        sp = self._perm_path(path)
-        with self._begin(write=True) as tr:
-            for p in perm:
-                pars = [owner, p] + sp
-                key = self._perms[pars]
-                tr[key] = b''
-        return True
-
-    def clear_perm(self, path, owner, perm):
-        sp = self._perm_path(path)
-        with self._begin(write=True) as tr:        
-            for p in perm:
-                key = self._perms[[owner, p] + sp]
-                del tr[key]

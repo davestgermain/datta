@@ -2,6 +2,7 @@ from .kv_fs import BaseKVFSManager
 from .ext import subspace
 import lmdb
 import operator
+import six
 from collections import namedtuple
 from contextlib import contextmanager
 
@@ -13,6 +14,20 @@ class DBProxy(object):
     def __init__(self, env, txn=None):
         self.env = env
         self.txn = txn
+        self.enter_count = 0
+        
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, type, exc, tb):
+        if not exc:
+            self.enter_count -= 1
+            if self.enter_count == 0:
+                self.txn.commit()
+        else:
+            self.txn.abort()
+            six.reraise(type, exc, tb)
 
     def create_transaction(self, write=False, buffers=False):
         txn = self.env.begin(write=write, buffers=buffers)
@@ -69,6 +84,8 @@ class DBProxy(object):
             val = self.txn.get(key)
         return val
 
+    get = __getitem__
+
     def __delitem__(self, key):
         if isinstance(key, slice):
             # do range clear
@@ -105,15 +122,8 @@ class FSManager(BaseKVFSManager):
         self._perms = subspace.Subspace((u'perms', ))
         self._active_repos = {}
 
-    @contextmanager
     def _begin(self, write=False):
         txn = self.env.begin(write=write)
-        try:
-            yield DBProxy(self.env, txn)
-        except:
-            txn.abort()
-            raise
-        else:
-            txn.commit()
+        return DBProxy(self.env, txn)
 
 

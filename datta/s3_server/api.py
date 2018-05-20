@@ -6,11 +6,11 @@ from urllib.parse import unquote, quote
 from sanic import Blueprint, response, exceptions
 from sanic.views import HTTPMethodView
 from sanic.views import stream as stream_decorator
+from sanic import log
 from .util import aws_error_response, \
         xml_response, get_etag, get_xml, \
         good_response
-from .aws import list_bucket, read_request, list_partials
-from . import auth
+from . import aws, auth
 
 bp = Blueprint('api')
 
@@ -25,6 +25,7 @@ def get_website_index(shelf, bucket, key):
     raise exceptions.NotFound(key)
 
 
+    
 class BucketView(HTTPMethodView):
     async def get(self, request, bucket):
         fs = request.app.fs
@@ -40,7 +41,7 @@ class BucketView(HTTPMethodView):
             path = bucket
             if prefix:
                 path += '/' + prefix
-            return xml_response(list_partials(fs, path))
+            return xml_response(aws.list_partials(fs, path))
         elif qs in ('versioning', 'versioning='):
             status = 'Enabled' if config.get('versioning', True) else 'Disabled'
             vxml = '''
@@ -49,13 +50,15 @@ class BucketView(HTTPMethodView):
             return xml_response(vxml)
         elif qs in ('logging', 'logging='):
             return xml_response('')
+        elif qs in ('acl=', 'acl'):
+            return xml_response(aws.get_acl_response(fs, '/' + bucket, request['username']))
 
         it = request.args.get('iter')
         delimiter = request.args.get('delimiter', '')
         end_key = request.args.get('end')
         marker = request.args.get('marker')
         # print(request.args)
-        s3iter = list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, marker=marker, versions='versions' in request.query_string)
+        s3iter = aws.list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, marker=marker, versions='versions' in request.query_string)
         async def iterator(resp):
             try:
                 for chunk in s3iter:
@@ -74,8 +77,29 @@ class BucketView(HTTPMethodView):
         return xml_response(iterator=iterator)
 
     async def put(self, request, bucket):
-        # bucket_name = auth.add_bucket(request.app.fs, request['user'], bucket)
-        return response.text(bucket_name)
+        user = request['username']
+        headers = {}
+        if user:
+            path = '/' + bucket
+            fs = request.app.fs
+            config = fs.get_path_config(path)
+            if request.query_string in ('acl=', 'acl'):
+                raise NotImplementedError('setting acls')
+            
+            if not config:
+                config = {'bucket': True, 'owner': user}
+                fs.set_path_config(path, config)
+                #add a bucket
+                acl = {user: ['r', 'w', 'd'], '*': []}
+                amz_acl = request.headers.get('x-amz-acl')
+                if amz_acl == 'public-read':
+                    acl['*'].append('r')
+                elif amz_acl == 'public-read-write':
+                    acl['*'].append('w')
+                fs.set_acl(path, acl)
+                headers['Location'] = path
+                log.logger.info('Created bucket %s', bucket)
+        return response.text('', headers=headers)
 
     async def post(self, request, bucket):
         fs = request.app.fs
@@ -96,7 +120,10 @@ class BucketView(HTTPMethodView):
         return xml_response(resp)
 
     async def delete(self, request, bucket):
-        request.app.fs.rmtree('/' + bucket, owner=request['username'])
+        if request['username']:
+            path = '/' + bucket
+            if request.app.fs.check_perm(path, request['username'], 'd'):
+                request.app.fs.rmtree(path)
         return xml_response('')
 
     async def head(self, request, bucket):
@@ -107,46 +134,13 @@ class ObjectView(HTTPMethodView):
     def path(self, bucket, key):
         return unquote('/{}/{}'.format(bucket, key))
 
-    async def get_acl_response(self, request, path):
-        fs = request.app.fs
-        meta_info = fs.get_file_metadata(path, None)
-        owner = meta_info.get('owner')
-        oid = hashlib.md5(owner.encode('utf8')).hexdigest()
-        user = request['username'] or '*'
-        grants = ''
-        for username in [owner, user]:
-            if fs.check_perm(path, username, raise_exception=False):
-                uid = hashlib.md5(username.encode('utf8')).hexdigest()
-                grants += '''<Grant>
-      <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-               xsi:type="Canonical User">
-        <ID>{uid}</ID>
-        <DisplayName>{name}</DisplayName>
-      </Grantee>
-      <Permission>FULL_CONTROL</Permission>
-    </Grant>
-'''.format(uid=uid, name=username)
-
-        xml = '''<?xml version="1.0" encoding="UTF-8"?>
-<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-  <Owner>
-    <ID>{owner_id}</ID>
-    <DisplayName>{ownername}</DisplayName>
-  </Owner>
-  <AccessControlList>
-  {grants}
-  </AccessControlList>
-</AccessControlPolicy>
-        '''.format(owner_id=oid, ownername=owner, grants=grants)
-        return xml_response(body=xml)
-
     async def get(self, request, bucket, key):
         if 'uploadId' in request.args:
             return await self.multipart_upload(request, bucket, key)
         path = self.path(bucket, key)
-        if request.query_string in ('acl=', 'acl'):
-            return await self.get_acl_response(request, path)
         fs = request.app.fs
+        if request.query_string in ('acl=', 'acl'):
+            return xml_response(aws.get_acl_response(fs, path, request['username']))
         headers = {}
         status = 200
         # print('GETTING', path)
@@ -210,7 +204,7 @@ class ObjectView(HTTPMethodView):
             # return response.text('')
             path = path[:-1]
         ctype = request.headers.get('content-type', '')
-        print('UPLOADING', path, request.headers, ctype)
+        # print('UPLOADING', path, request.headers, ctype)
         try:
             with fs.open(path, mode='w', owner=owner) as fp:
                 fp.do_hash('md5')
@@ -223,8 +217,8 @@ class ObjectView(HTTPMethodView):
                 expiration = request.headers.get('Expires', None)
                 if expiration:
                     fp.meta['expiration'] = float(expiration)
-                await read_request(request, fp)
-                print('OWNER IS', fp.owner)
+                await aws.read_request(request, fp)
+                # print('OWNER IS', fp.owner)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
         headers = {'Etag': fp.meta['md5']}
@@ -309,7 +303,7 @@ class ObjectView(HTTPMethodView):
             content_type = request.headers.get('Content-Type', 'application/octet-stream')
             body_md5 = request.headers.get('Content-MD5')
             buf = partial.open_part(partnum)
-            await read_request(request, buf)
+            await aws.read_request(request, buf)
             buf.close()
             headers['Etag'] = buf.meta['md5']
         elif request.method == 'GET':
@@ -434,7 +428,7 @@ class SimpleAPI(HTTPMethodView):
                 expiration = request.headers.get('Expires', None)
                 if expiration:
                     fp.meta['expiration'] = float(expiration)
-                await read_request(request, fp)
+                await aws.read_request(request, fp)
         except FileNotFoundError:
             raise exceptions.NotFound(path)
         except PermissionError:

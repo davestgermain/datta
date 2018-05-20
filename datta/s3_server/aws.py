@@ -1,4 +1,5 @@
 import os.path
+import hashlib
 
 
 async def write_async(write_buf, chunk):
@@ -93,6 +94,47 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
 
 def list_available_buckets(fs, username):
     pass
+
+def md5hex(msg):
+    return hashlib.md5(msg.encode('utf8')).hexdigest()
+
+def get_acl_response(fs, path, user):
+    acl = fs.get_acl(path)
+    if not path.endswith('/'):
+        meta_info = fs.get_file_metadata(path, None)
+        owner = meta_info.get('owner')
+        oid = md5hex(owner)
+    else:
+        config = fs.get_path_config(path)
+        owner = config.get('owner', 'unknown')
+        oid = md5hex(owner)
+    grants = ''
+    for username in [owner, user]:
+        if username in acl:
+            uid = md5hex(username)
+            grants += '''<Grant>
+  <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+           xsi:type="Canonical User">
+    <ID>{uid}</ID>
+    <DisplayName>{name}</DisplayName>
+  </Grantee>
+  <Permission>FULL_CONTROL</Permission>
+</Grant>
+'''.format(uid=uid, name=username)
+
+    xml = '''<?xml version="1.0" encoding="UTF-8"?>
+<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Owner>
+<ID>{owner_id}</ID>
+<DisplayName>{ownername}</DisplayName>
+</Owner>
+<AccessControlList>
+{grants}
+</AccessControlList>
+</AccessControlPolicy>
+    '''.format(owner_id=oid, ownername=owner, grants=grants)
+    return xml
+
 
 def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None, versions=False):
     """

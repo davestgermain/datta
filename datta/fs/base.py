@@ -188,17 +188,36 @@ class BaseManager(abc.ABC):
     def rename(self, frompath, topath, owner=Owner.ALL, record_move=True):
         pass
 
-    @abc.abstractmethod
-    def set_perm(self, path, owner, perm=Perm.read):
-        pass
-    
-    @abc.abstractmethod
-    def check_perm(self, path, owner, perm=Perm.read, raise_exception=True):
-        pass
+    def check_perm(self, path, owner, perm=Perm.read, raise_exception=True, tr=None):
+        if owner == Owner.ROOT:
+            return True
+        acl = self.get_acl(path, tr=tr)
+        if acl:
+            if perm in acl.get(owner, []):
+                return True
+            elif perm in acl.get(Owner.ALL, []):
+                return True
+        if raise_exception:
+            raise PermissionError((path, owner, perm))
+        else:
+            return False
 
-    @abc.abstractmethod
+    def set_perm(self, path, owner, perm=Perm.read):
+        acl = self.get_acl(path) or {}
+        acl[owner] = list(perm)
+        self.set_acl(path, acl)
+        return True
+
     def clear_perm(self, path, owner, perm):
-        pass
+        acl = self.get_acl(path) or {}
+        if owner in acl:
+            for p in perm:
+                try:
+                    acl[owner].remove(perm)
+                except ValueError:
+                    continue
+        self.set_acl(path, acl)
+        return True
 
     def rmtree(self, directory, include_history=False):
         """
@@ -289,7 +308,7 @@ class BaseManager(abc.ABC):
         """
         
         """
-        configpath = '/'.join(path.split('/')[:2])
+        configpath = u'/'.join(path.split(u'/')[:2])
         if not isinstance(config, Record):
             config = Record(config)
         with self.open(configpath, mode=Perm.write, owner=Owner.ROOT) as fp:

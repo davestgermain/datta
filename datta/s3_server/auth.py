@@ -13,19 +13,6 @@ except ImportError:
     from datta.fs.ext import secrets
 
 
-AUTH_BUCKET = '.auth'
-ACL_BUCKET = '.acl'
-DEFAULT_ACL = {'*': ['r', 'w', 'd']}
-DEFAULT_ACL_OWNER = ['r', 'w', 'd', 's']
-
-"""
-ACL example:
-buckets['secret-bucket'] = {
-    'user1': ['r', 'w', 'd', 's'],
-    '*': ['r']
-}
-
-"""
 
 AWS_PASS = 1
 
@@ -58,14 +45,6 @@ def check_password(user_obj, password):
     encoded, salt, iterations = user_obj['password']
     return encode_password(password, salt=salt, iterations=iterations)[0] == encoded
 
-def can_do(acl, user, operation='r'):
-    """
-    checks whether the given user can perform given operation in the ACL
-    """
-    try:
-        return operation in acl[user]
-    except KeyError:
-        return False
 
 def change_password(shelf, user_obj, password):
     """
@@ -126,21 +105,8 @@ def add_bucket(fs, user, bucket, extra_acl=None):
     # shelf.create_bucket(bucket)
     return bucket_name
 
-# def get_acl(shelf, bucket, default=DEFAULT_ACL):
-#     return shelf.get((ACL_BUCKET, bucket), default)
-#
-# def set_acl(shelf, bucket, acl):
-#     shelf[ACL_BUCKET, bucket] = acl
 
-def can_access_acl(shelf, username, bucket, operation='r'):
-    acl = get_acl(shelf, bucket, {})
-    if not acl:
-        return acl
-    # to read acls, must have 's' perm
-    # or the 'r' perm on the .acl acl
-    if can_do(acl, username, 's') or can_do(get_acl(shelf, ACL_BUCKET), username, operation):
-        return acl
-    return None
+
 
 def get_user(fs, username):
     return fs['/.auth/%s' % username]
@@ -227,8 +193,11 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
 
 
 def available_buckets(fs, user=None):
-    for i, count in fs.common_prefixes('/', '/'):
-        if not i.startswith('.'):
-            yield i
+    for obj in fs.listdir('/'):
+        if obj.content_type == 'application/x-directory':
+            yield obj.path
+    # for i, count in fs.common_prefixes('/', '/'):
+    #     if not i.startswith('.'):
+    #         yield i
     # for path in fs.listdir('/', owner=user):
     #     yield path
