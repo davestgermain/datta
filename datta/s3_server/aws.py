@@ -36,6 +36,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
     is_truncated = 'false'
     contents = []
     last_key = None
+    subdirs = set()
     for row in iterator:
         key = row.path.replace(bucket_prefix, '', 1)
         if key == bucket_prefix[:-1]:
@@ -54,6 +55,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
             rows = [row]
         for row in rows:
             if row.get('content_type') == 'application/x-directory':
+                subdirs.add(row.path.split('/')[-1])
                 continue
             modified = row.get('modified', row.created).isoformat() + 'Z'
             created = row.get('created').isoformat() + 'Z'
@@ -90,7 +92,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
             is_truncated = 'true'
             break
 
-    return contents, last_key, is_truncated
+    return contents, last_key, is_truncated, subdirs
 
 def list_available_buckets(fs, username):
     pass
@@ -112,9 +114,9 @@ def get_acl_response(fs, path, user):
     for username in [owner, user]:
         if username in acl:
             uid = md5hex(username)
-            grants += '''<Grant>
-  <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-           xsi:type="Canonical User">
+            grants += '''
+<Grant>
+  <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Canonical User">
     <ID>{uid}</ID>
     <DisplayName>{name}</DisplayName>
   </Grantee>
@@ -131,8 +133,7 @@ def get_acl_response(fs, path, user):
 <AccessControlList>
 {grants}
 </AccessControlList>
-</AccessControlPolicy>
-    '''.format(owner_id=oid, ownername=owner, grants=grants)
+</AccessControlPolicy>'''.format(owner_id=oid, ownername=owner, grants=grants)
     return xml
 
 
@@ -159,7 +160,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
 
 
     bucket_prefix = '/%s/' % bucket
-    contents, last_key, is_truncated = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
+    contents, last_key, is_truncated, subdirs = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
     count = len(contents)
     yield preamble
     yield from contents
@@ -168,10 +169,10 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     yield '<KeyCount>%d</KeyCount><IsTruncated>%s</IsTruncated>' % (count, is_truncated)
 
     if delimiter:
-        subdirs = fs.common_prefixes(path, delimiter)
-        if subdirs:
+        prefixes = set([d[0] for d in fs.common_prefixes(path, delimiter)]) | subdirs
+        if prefixes:
             next_token = None
-            for cp, count in sorted(subdirs):
+            for cp in sorted(prefixes):
                 if next_token is None:
                     next_token = cp
                 cp = cp.replace(bucket_prefix, '', 1)

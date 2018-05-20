@@ -9,7 +9,7 @@ from sanic.views import stream as stream_decorator
 from sanic import log
 from .util import aws_error_response, \
         xml_response, get_etag, get_xml, \
-        good_response
+        good_response, asynread
 from . import aws, auth
 
 bp = Blueprint('api')
@@ -148,7 +148,6 @@ class ObjectView(HTTPMethodView):
         try:
             fp = fs.open(path, owner=owner)
         except FileNotFoundError:
-            path
             return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
@@ -171,6 +170,13 @@ class ObjectView(HTTPMethodView):
         resp.body = b''
         return resp
 
+    async def read_from_buf(self, from_buf, to_buf):
+        while 1:
+            chunk = await asynread(from_buf, 8192)
+            if not chunk:
+                break
+            to_buf.write(chunk)
+
     @stream_decorator
     async def put(self, request, bucket, key):
         if 'uploadId' in request.args:
@@ -184,20 +190,17 @@ class ObjectView(HTTPMethodView):
         copy = False
         owner = request['username'] or 'anon'
 
-        # if 'x-amz-copy-source' in request.headers:
-        #     # copy an object from the given bucket
-        #     copy_bucket, copy_key = request.headers['x-amz-copy-source'][1:].encode('utf8').split(b'/', 1)
-        #     can, error_code = auth.can_access_bucket(shelf,
-        #                             copy_bucket,
-        #                             user=request['user'],
-        #                             headers=request.headers,
-        #                             url=request.url,
-        #                             operation='r')
-        #     if not can:
-        #         return aws_error_response(error_code, 'no permission', copy_key, bucket=copy_bucket, key=copy_bucket)
-        #     else:
-        #         value = shelf.get_from_bucket(copy_bucket, copy_key)
-        #         copy = True
+        copy_file = None
+        if 'x-amz-copy-source' in request.headers:
+            # copy an object from the given bucket
+            copy_path = os.path.join('/', request.headers['x-amz-copy-source'])
+            try:
+                copy_file = fs.open(copy_path, owner=owner)
+            except PermissionError:
+                return aws_error_response(error_code, 'no permission', copy_key, bucket=copy_bucket, key=copy_bucket)
+            except FileNotFoundError:
+                return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
+
         path = self.path(bucket, key)
         if path.endswith('/'):
             # directories are a no-op
@@ -217,7 +220,10 @@ class ObjectView(HTTPMethodView):
                 expiration = request.headers.get('Expires', None)
                 if expiration:
                     fp.meta['expiration'] = float(expiration)
-                await aws.read_request(request, fp)
+                if copy_file:
+                    await self.read_from_buf(copy_file, fp)
+                else:
+                    await aws.read_request(request, fp)
                 # print('OWNER IS', fp.owner)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
