@@ -1,6 +1,7 @@
 import time
 import os.path
 from datetime import datetime
+import hashlib
 from urllib.parse import unquote, quote
 from sanic import Blueprint, response, exceptions
 from sanic.views import HTTPMethodView
@@ -106,13 +107,48 @@ class ObjectView(HTTPMethodView):
     def path(self, bucket, key):
         return unquote('/{}/{}'.format(bucket, key))
 
+    async def get_acl_response(self, request, path):
+        fs = request.app.fs
+        meta_info = fs.get_file_metadata(path, None)
+        owner = meta_info.get('owner')
+        oid = hashlib.md5(owner.encode('utf8')).hexdigest()
+        user = request['username'] or '*'
+        grants = ''
+        for username in [owner, user]:
+            if fs.check_perm(path, username, raise_exception=False):
+                uid = hashlib.md5(username.encode('utf8')).hexdigest()
+                grants += '''<Grant>
+      <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+               xsi:type="Canonical User">
+        <ID>{uid}</ID>
+        <DisplayName>{name}</DisplayName>
+      </Grantee>
+      <Permission>FULL_CONTROL</Permission>
+    </Grant>
+'''.format(uid=uid, name=username)
+
+        xml = '''<?xml version="1.0" encoding="UTF-8"?>
+<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Owner>
+    <ID>{owner_id}</ID>
+    <DisplayName>{ownername}</DisplayName>
+  </Owner>
+  <AccessControlList>
+  {grants}
+  </AccessControlList>
+</AccessControlPolicy>
+        '''.format(owner_id=oid, ownername=owner, grants=grants)
+        return xml_response(body=xml)
+
     async def get(self, request, bucket, key):
         if 'uploadId' in request.args:
             return await self.multipart_upload(request, bucket, key)
+        path = self.path(bucket, key)
+        if request.query_string in ('acl=', 'acl'):
+            return await self.get_acl_response(request, path)
         fs = request.app.fs
         headers = {}
         status = 200
-        path = self.path(bucket, key)
         # print('GETTING', path)
         owner = request['username']
         try:
@@ -145,6 +181,8 @@ class ObjectView(HTTPMethodView):
     async def put(self, request, bucket, key):
         if 'uploadId' in request.args:
             return await self.multipart_upload(request, bucket, key)
+        if request.query_string in ('acl=', 'acl'):
+            raise NotImplementedError('setting acls')
 
         fs = request.app.fs
         # data = request.body or b''
