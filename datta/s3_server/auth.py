@@ -167,14 +167,18 @@ def user_from_request(fs, request):
                     return
 
                 secret_key = user['secret_key']
-                gen_sig = get_aws_signature(request.url, request.method, to_sign, secret_key, date, sha256=headers.get('x-amz-content-sha256', ''))
-
                 signature = SIG_RE.search(auth_header).group(1)
-                if gen_sig == signature:
+                valid = get_aws_signature(request.url,
+                                          request.method,
+                                          to_sign,
+                                          secret_key,
+                                          date,
+                                          sha256=headers.get('x-amz-content-sha256', ''),
+                                          recv_sig=signature)
+
+                if valid:
                     # print('USER ID', user['username'])
                     return user
-                else:
-                    error_logger.error('BAD SIGNATURE', gen_sig, signature, headers)
             elif check_password(user, auth_pass):
                 return user
     return None
@@ -183,7 +187,7 @@ def user_from_request(fs, request):
 def sign(key, msg):
     return hmac.new(key, msg.encode('utf8'), hashlib.sha256).digest()
 
-def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3', region='us-east-1', sha256=''):
+def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3', region='us-east-1', sha256='', recv_sig=None):
     datestamp = date.strftime('%Y%m%d')
     amzdate = date.strftime('%Y%m%dT%H%M%SZ')
 
@@ -214,6 +218,11 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
     signing_key = sign(ks, 'aws4_request')
 
     signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+    if recv_sig is not None and signature != recv_sig:
+        error_logger.error('BAD SIGNATURE gen:%s rec:%s headers:%r', signature, recv_sig, signed_headers)
+        error_logger.error(canonical_req)
+        error_logger.error(string_to_sign)
+        return False
     return signature
 
 
