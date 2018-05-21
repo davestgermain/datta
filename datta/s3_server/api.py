@@ -158,7 +158,11 @@ class ObjectView(HTTPMethodView):
         #     else:
         #         return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         for key, value in fp.meta.items():
-            headers['x-amz-meta-%s' % key] = value if isinstance(value, str) else value.decode('utf8')
+            if isinstance(value, bytes):
+                value = value.decode('utf8')
+            else:
+                value = str(value)
+            headers['x-amz-meta-%s' % key] = value
         headers['x-amz-rev'] = str(fp.rev)
 
         return good_response(request,
@@ -242,8 +246,10 @@ class ObjectView(HTTPMethodView):
 
     async def delete(self, request, bucket, key):
         path = self.path(bucket, key)
+        config = request.app.fs.get_path_config(path)
+        include_history = not config.get('versioning', True)
         try:
-            if request.app.fs.delete(path, owner=request['username']):
+            if request.app.fs.delete(path, owner=request['username'], include_history=include_history):
                 return response.text('')
             else:
                 return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)

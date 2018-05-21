@@ -449,4 +449,28 @@ class BaseKVFSManager(BaseManager):
         path = [p for p in path.split(u'/') if p]
         return path
 
+    def _find_orphaned_history(self):
+        hist = self._history
+        files = self._files
+        found = set()
+        with self._begin() as tr:
+            for k, v in tr[files.range()]:
+                up = files.unpack(k)
+                path = '/' + '/'.join(up[0])
+                found.add(self._path_hash(path))
+            for k, v in tr[hist.range()]:
+                up = hist.unpack(k)
+                phash = up[0][0]
+                if phash not in found and len(up[1:]) == 1:
+                    v = Record.from_bytes(v)
+                    if v.path:
+                        print(v.path)
+                    else:
+                        print(phash)
+    
+    def _delete_history_for_paths(self, paths):
+        with self._begin(write=True) as tr:
+            for path in paths:
+                del tr[self.make_history_key(path).range()]
 
+                

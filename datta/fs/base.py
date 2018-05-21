@@ -173,6 +173,19 @@ class BaseManager(abc.ABC):
                 ft = os.path.join(topath, p)
                 self.copyfile(fn, ft)
 
+    def mkdir(self, dirname, owner=Owner.SYS, raise_exception=True, **meta):
+        if dirname.endswith(u'/'):
+            dirname = dirname[:-1]
+        if dirname in self:
+            if raise_exception:
+                raise IOError('directory exists')
+            else:
+                return False
+        with self.open(dirname, mode=Perm.write, owner=owner) as fp:
+            fp.content_type = u'application/x-directory'
+            fp.meta.update(meta)
+        self.set_perm(dirname, owner, Perm.ALL)
+
     @abc.abstractmethod
     def delete(self, path, owner=Owner.ALL, include_history=False, force_timestamp=None):
         """
@@ -298,7 +311,9 @@ class BaseManager(abc.ABC):
             configpath = '/'.join(sp[:2])
             try:
                 with self.open(configpath, owner=Owner.ROOT) as fp:
-                    return Record.from_bytes(fp.read())
+                    data = fp.read()
+                    if data:
+                        return Record.from_bytes(data)
             except FileNotFoundError:
                 if create:
                     self.set_path_config(path, kwargs)
@@ -430,6 +445,10 @@ class VersionedFile(io.BufferedIOBase):
         else:
             self._buf = SpooledTemporaryFile(max_size=getattr(self, 'buffer_threshold', 52428800))
             self.hash = None
+
+    @property
+    def is_dir(self):
+        return self.content_type == u'application/x-directory'
 
     def do_hash(self, algo='sha256'):
         self.hash = algo
