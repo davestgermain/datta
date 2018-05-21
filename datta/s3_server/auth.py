@@ -201,7 +201,8 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
 def available_buckets(fs, user=None):
     for obj in fs.listdir('/'):
         if obj.content_type == 'application/x-directory':
-            yield obj.path
+            if fs.check_perm(obj.path, user, raise_exception=False):
+                yield obj.path.replace('/', '')
     # for i, count in fs.common_prefixes('/', '/'):
     #     if not i.startswith('.'):
     #         yield i
