@@ -371,20 +371,21 @@ class ObjectView(HTTPMethodView):
 @bp.route('/')
 async def index(request):
     fs = request.app.fs
-    user = request['username']
+    user = request['username'] or ''
+    uid = hashlib.md5(user.encode('utf8')).hexdigest()
     iterator = auth.available_buckets(fs, user=user)
     async def stream(response):
         list_buckets = '''<?xml version="1.0" encoding="UTF-8"?>
-        <ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-            <Owner>
-                <ID>%s</ID>
-                <DisplayName>%s</DisplayName>
-            </Owner>
-            <Buckets>
+<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Owner>
+    <ID>%s</ID>
+    <DisplayName>%s</DisplayName>
+</Owner>
+<Buckets>
         '''
-        response.write(list_buckets % (user, user))
+        response.write(list_buckets % (uid, user))
         for info in iterator:
-            data = '<Bucket><CreationDate>%sZ</CreationDate><Name>%s</Name></Bucket>' % (datetime.utcnow().isoformat(), info)
+            data = '<Bucket><Name>%s</Name><CreationDate>%sZ</CreationDate></Bucket>' % (info, datetime.utcnow().isoformat())
             response.write(data)
         response.write('</Buckets></ListAllMyBucketsResult>')
     return xml_response(iterator=stream)

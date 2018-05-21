@@ -1,5 +1,5 @@
 # import logging
-from sanic import Sanic
+from sanic import Sanic, log
 from . import api, admin, vhost, auth
 from ..fs import get_manager
 
@@ -31,6 +31,7 @@ async def get_user(request):
 
 
 async def handle_wildcard(request):
+    log.logger.debug(request.url)
     if not request.host.startswith(app.root_host):
         # this is a wildcard request
         bucket, host = request.host.split('.', 1)
