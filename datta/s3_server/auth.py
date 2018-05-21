@@ -125,7 +125,7 @@ def user_from_request(fs, request):
             if auth_pass == AWS_PASS:
                 # 20180517T030056Z
                 date = datetime.strptime(headers['x-amz-date'], "%Y%m%dT%H%M%SZ")
-                assert (datetime.utcnow() - date).seconds <= 300
+                # assert (datetime.utcnow() - date).seconds <= 300
                 try:
                     if 'expect;' in auth_header:
                         # nginx strips expect headers, so we have to add it
