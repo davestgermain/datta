@@ -169,7 +169,10 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
         canonical_q.append(q)
     canonical_q.sort()
     canonical_q = '&'.join(canonical_q)
-    canonical_req = [method, parsed_url.path, canonical_q]
+    path = parsed_url.path
+    if path == '//':
+        path = '/'
+    canonical_req = [method, path, canonical_q]
     for header, value in signed_headers:
         value = ' '.join(value.strip().split())
         canonical_req.append('%s:%s' % (header.strip(), value))
