@@ -34,8 +34,7 @@ class DBProxy(object):
         return DBProxy(self.env, txn)
 
     def cancel(self):
-        if self.txn:
-            self.txn.abort()
+        self.txn.abort()
 
     def get_range(self, start, end, reverse=False, limit=None):
         if hasattr(start, 'key'):

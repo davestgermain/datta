@@ -1,81 +1,12 @@
 # from hatta.search import WikiSearch
 import hatta
-import threading
 import os.path, os
 import time
 from collections import defaultdict
-from whoosh import index, fields, query
-from whoosh.qparser import QueryParser
-from whoosh.filedb.filestore import Storage, FileStorage
-from whoosh.filedb.structfile import StructFile
 import six
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
+from datta.search import IndexManager, query
 
 
-class DBStorage(Storage):
-    def __init__(self, fs, prefix):
-        self.fs = fs
-        self.prefix = prefix
-        self.locks = {}
-
-    def create(self):
-        self.fs.set_perm(self.prefix, u'*', u'rwd')
-
-    def _topath(self, name):
-        return os.path.join(self.prefix, name)
-
-    def create_file(self, name, mode=u'w'):
-        return self.open_file(unicode(name), mode=u'w')
-
-    def delete_file(self, name):
-        self.fs.delete(self._topath(name), include_history=True)
-
-    def rename_file(self, fromname, toname, safe=False):
-        if safe and self.file_exists(toname):
-            raise Exception(toname)
-        self.fs.rename(self._topath(fromname), self._topath(toname), record_move=False)
-
-    def file_exists(self, name):
-        return self._topath(name) in self.fs
-
-    def file_length(self, name):
-        with self.fs.open(self._topath(name), mode=u'r') as fp:
-            return fp.length
-
-    def file_modified(self, name):
-        with self.fs.open(self._topath(name), mode=u'r') as fp:
-            return fp.modified
-
-    def __iter__(self):
-        l = self.list()
-        return iter(l)
-
-    def list(self):
-        return [p.path.replace(self.prefix, u'') for p in self.fs.listdir(self.prefix)]
-
-    def open_file(self, name, mode=u'r'):
-        path = self._topath(name)
-        sf = StructFile(self.fs.open(path, mode=mode))
-        sf.is_real = False
-        sf.fileno = None
-        return sf
-
-    def lock(self, name):
-        if name not in self.locks:
-            self.locks[name] = threading.Lock()
-        return self.locks[name]
-
-    def temp_storage(self, name=None):
-        name = name or (u'temp%d' % time.time())
-        prefix = os.path.join(os.path.dirname(self.prefix), name)
-        return DBStorage(self.fs, prefix)
-
-    def destroy(self):
-        for f in self.fs.listdir(self.prefix):
-            self.fs.delete(f.path, include_history=True)
 
 
 class WikiDBSearch(hatta.search.WikiSearch):
@@ -87,43 +18,47 @@ class WikiDBSearch(hatta.search.WikiSearch):
         self.lang = lang
         if lang == "ja":
             self.split_text = self.split_japanese_text
-        self.schema = fields.Schema(links=fields.KEYWORD(stored=True), title=fields.ID(stored=True, unique=True), content=fields.TEXT, has_links=fields.BOOLEAN, wanted=fields.KEYWORD(stored=True))
+        self.index = IndexManager(self.fs)
+        self.name = storage._wiki
         
-        # ipath = os.path.join(cache_path, 'search')
-        # if not os.path.exists(ipath):
-        #     os.makedirs(ipath)
-        # self.istore = FileStorage(ipath)
-        self.istore = DBStorage(self.fs, os.path.join(u'/.meta/', storage._wiki, u'search/'))
-        self.istore.create()
-        if self.istore.index_exists():
-            self.index = self.istore.open_index()
-        else:
-            self.index = self.istore.create_index(schema=self.schema)
+        if not self.index.index_exists(self.name):
+            schema = {
+                'links': {
+                    'type': 'KEYWORD',
+                    'kwargs': {'stored': True}
+                },
+                'title': {
+                    'type': 'ID',
+                    'kwargs': {'stored': True, 'unique': True}
+                },
+                'content': {
+                    'type': 'TEXT',
+                },
+                'has_links': {
+                    'type': 'BOOLEAN',
+                },
+                'wanted': {
+                    'type': 'KEYWORD',
+                    'kwargs': {'stored': True}
+                },
+            }
+            self.index.create_index(self.name, schema)
         # self._thread = None
 
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
-        try:
-            with self.istore.open_file('reporev') as fp:
-                rev = int(fp.read())
-        except:
-            rev = -1
-        return rev
+        return self.index.get_index_revision(self.name)
 
     def set_last_revision(self, rev):
         """Store the last indexed repository revision."""
-        with self.istore.create_file('reporev') as fp:
-            fp.write(str(rev))
+        return self.index.get_index_revision(self.name, rev)
 
     def find(self, words):
         """Iterator of all pages containing the words, and their scores."""
-        with self.index.searcher() as searcher:
-            sq = query.And([query.Term("content", w) for w in words])
-            results = searcher.search(sq, limit=1000)
-            for result in results:
-                title = result['title']
-                score = int(result.score)
-                yield score, title
+        for result in self.index.simple_search(self.name, words, field='content'):
+            title = result['title']
+            score = int(result.score)
+            yield score, title
 
     def update(self, wiki):
         """Reindex al pages that changed since last indexing."""
@@ -144,8 +79,8 @@ class WikiDBSearch(hatta.search.WikiSearch):
             #     self.INDEX_THREAD.start()
 
     def reindex(self, wiki, pages):
-        with self.index.writer() as writer:
-            with self.index.searcher() as s:
+        with self.index.index_writer(self.name) as writer:
+            self.index.index_searcher(self.name) as searcher:
                 for title in pages:
                     writer.delete_by_term('title', title, searcher=s)
             for title in pages:
@@ -197,8 +132,8 @@ class WikiDBSearch(hatta.search.WikiSearch):
         if text is None and data is not None:
             text = unicode(data, self.storage.charset, 'replace')
         self.set_last_revision(self.storage.repo_revision())
-        with self.index.writer() as writer:
-            with self.index.searcher as s:
+        with self.index.index_writer(self.name) as writer:
+            with self.index.index_searcher(self.name) as s:
                 writer.delete_by_term('title', title, searcher=s)
             self.reindex_page(page, title, writer, text=text)
 
@@ -206,41 +141,38 @@ class WikiDBSearch(hatta.search.WikiSearch):
         """Gives all pages with no links to them."""
         linked = set()
         total = {p for p in self.storage}
-        with self.index.searcher() as searcher:
-            for doc in searcher.search(query.Every('has_links'), limit=10000):
-                for link in doc['links'].split():
-                    link = link.split(':', 1)[0]
-                    linked.add(link.replace('%20', ' '))
+        for doc in self.index.run_query(self.name, query.Every('has_links'), limit=10000):
+            for link in doc['links'].split():
+                link = link.split(':', 1)[0]
+                linked.add(link.replace('%20', ' '))
         return sorted(total - linked)
 
     def wanted_pages(self):
         """Gives all pages that are linked to, but don't exist, together with
         the number of links."""
-        with self.index.searcher() as searcher:
-            wanted = defaultdict(int)
-            for doc in searcher.search(query.Every('wanted'), limit=8000):
-                for link in doc['wanted'].split(' '):
-                    wanted[link.replace('%20', ' ')] += 1
+        wanted = defaultdict(int)
+        for doc in self.index.run_query(self.name, query.Every('wanted'), limit=8000):
+            for link in doc['wanted'].split(' '):
+                wanted[link.replace('%20', ' ')] += 1
         items = [(count, link) for link, count in wanted.items()]
         items.sort(reverse=True)
         return items
 
     def page_backlinks(self, title):
         """Gives a list of pages linking to specified page."""
-        with self.index.searcher() as searcher:
-            title = title.replace(' ', '%20')
-            sq = query.Prefix("links", title + ':')
-            results = set()
-            for result in searcher.search(sq, limit=8000):
-                results.add(result['title'])
-            return results
+        title = title.replace(' ', '%20')
+        sq = query.Prefix("links", title + ':')
+        results = set()
+        for doc in self.index.run_query(self.name, sq, limit=8000):
+            results.add(doc['title'])
+        return results
 
     def page_links(self, title):
         """Gives a list of links on specified page."""
         return [l[0] for l in self.page_links_and_labels(title)]
 
     def page_links_and_labels(self, title):
-        with self.index.searcher() as searcher:
+        with self.index.index_searcher(self.name) as searcher:
             doc = searcher.document(title=title)
             if doc:
                 links = doc.get('links', '')

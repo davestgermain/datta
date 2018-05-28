@@ -323,14 +323,23 @@ class BaseKVFSManager(BaseManager):
 
     def create_repository(self, directory):
         directory = six.text_type(directory)
-        key = self._repos[directory]
-        rev = -1
-        with self._begin(write=True) as tr:
-            val = tr[key[None]]
-            if not val:
-                tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
+        config = self.get_path_config(directory)
+        if not config.get('is_repo'):
+            config['is_repo'] = {}
+            key = self._repos[directory]
+            with self._begin(write=True) as tr:
+                val = tr[key[None]]
+                if not val:
+                    tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
             keyrange = slice(key.key(), self._repos[directory, None].key())
-            self._active_repos[directory] = {'key': key, 'range': keyrange}
+            config['is_repo']['key'] = key
+            config['is_repo']['range'] = (keyrange.start, keyrange.stop)
+            self.set_path_config(directory, config)
+        else:
+            repo = config.get('is_repo')
+            key = repo['key']
+            keyrange = slice(repo['range'][0], repo['range'][1])
+        self._active_repos[directory] = {'key': key, 'range': keyrange}
 
     def repo_rev(self, repository):
         """
