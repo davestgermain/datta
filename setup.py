@@ -6,7 +6,7 @@ os.environ['COPYFILE_DISABLE'] = 'true'  # this disables including resource fork
 
 extra = {}
 
-packages = ['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki', 'datta.fs.ext', 'datta.search']
+packages = ['datta', 'datta.fs', 'datta.s3_server', 'datta.wiki', 'datta.ext', 'datta.search']
 setup(
     name="datta",
     use_scm_version=True,

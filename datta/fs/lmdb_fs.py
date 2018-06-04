@@ -1,5 +1,5 @@
 from .kv_fs import BaseKVFSManager
-from .ext import subspace
+from ..ext import subspace
 import lmdb
 import operator
 import six

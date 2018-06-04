@@ -10,7 +10,7 @@ try:
     import secrets
 except ImportError:
     # only available >3.6
-    from datta.fs.ext import secrets
+    from datta.ext import secrets
 
 
 
