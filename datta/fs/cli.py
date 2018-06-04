@@ -4,7 +4,7 @@ import six
 import sys
 import os.path
 import os
-from . import get_manager
+from . import get_manager, Perm
 
 def main():
     parser = argparse.ArgumentParser(prog='datta.fs', description='navigate the filesytem')
@@ -58,10 +58,10 @@ def main():
 
     owner = os.getlogin()
     if args.command == 'ls':
-        templ = '{path:48}\t{length:8}\t{created:26}\t{modified:26}'
+        templ = u'{path:48}\t{length:8}\t{created:26}\t{modified:26}'
         kwargs = dict(path='Path', length='Size', created='Created', modified='Modified')
         if args.detail:
-            templ += '\t{rev:4}\t{content_type:20}\t{meta}'
+            templ += u'\t{rev:4}\t{content_type:20}\t{meta}'
             kwargs.update({'rev': 'Rev', 'meta': 'Meta', 'content_type': 'Content-Type'})
         row = templ.format(**kwargs)
         printed = False
@@ -77,7 +77,7 @@ def main():
             row = templ.format(**p.to_dict())
             six.print_(row)
     elif args.command == 'cat':
-        with man.open(args.path, mode='r', rev=args.version, owner=owner) as fp:
+        with man.open(args.path, mode=Perm.read, rev=args.version, owner=owner) as fp:
             fn = sys.stdout.fileno()
             if os.isatty(fn):
                 try:
@@ -96,7 +96,7 @@ def main():
                 sys.stdout.flush()
     elif args.command == 'pipe':
         fn = sys.stdin.fileno()
-        with man.open(args.path, mode='w', owner=owner) as fp:
+        with man.open(args.path, mode=Perm.write, owner=owner) as fp:
             while 1:
                 block = os.read(fn, 8192)
                 if not block:
@@ -108,8 +108,8 @@ def main():
         else:
             frompath, topath = args.frompath, args.topath
             if frompath.startswith('@') and topath.startswith('@'):
-                with man.open(frompath[1:], mode='r', owner=owner) as fp:
-                    with man.open(topath[1:], mode='w', owner=owner) as tp:
+                with man.open(frompath[1:], mode=Perm.read, owner=owner) as fp:
+                    with man.open(topath[1:], mode=Perm.write, owner=owner) as tp:
                         while 1:
                             block = fp.read(8192)
                             if not block:
@@ -117,7 +117,7 @@ def main():
                             tp.write(block)
             elif frompath.startswith('@'):
                 # copy from fs to here
-                with man.open(frompath[1:], mode='r', owner=owner) as fp:
+                with man.open(frompath[1:], mode=Perm.read, owner=owner) as fp:
                     if topath.endswith('/'):
                         topath = os.path.join(topath, os.path.basename(frompath))
                     with open(topath, mode='wb') as tp:
@@ -145,13 +145,13 @@ def main():
         for info in man.get_meta_history(args.path):
             if info.path != args.path:
                 six.print_('\t', info.path)
-            info['created'] = str(info['created'])
-            owner = info['owner']
+            info.created = str(info.created)
+            owner = info.owner
             if not isinstance(owner, six.text_type):
-                info['owner'] = owner.decode('utf8')
-            if 'length' not in info:
-                info['length'] = 0
-            six.print_(row.format(**info))
+                info.owner = owner.decode('utf8')
+            if not info.length:
+                info.length = 0
+            six.print_(row.format(**info.to_dict()))
     elif args.command == 'shell':
         from IPython import start_ipython
         ns = {

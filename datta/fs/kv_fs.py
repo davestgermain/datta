@@ -93,7 +93,7 @@ class BaseKVFSManager(BaseManager):
                     row.rev = key[0]
                     history.append(row)
 
-        history.sort(key=operator.itemgetter(u'created'), reverse=True)
+        history.sort(key=operator.attrgetter('created'), reverse=True)
         return history
 
     def get_file_metadata(self, path, rev, tr=None):

@@ -71,12 +71,12 @@ class SlotMaker(type):
         return super(SlotMaker, cls).__new__(cls, name, bases, cdict)
 
 
-class Record(metaclass=SlotMaker):
+@six.add_metaclass(SlotMaker)
+class Record(object):
     _version = 1
-    if six.PY2:
-        __metaclass__ = SlotMaker
 
-    def __init__(self, *args, _version=1, **kwargs):
+    def __init__(self, *args, **kwargs):
+        version = kwargs.pop('_version', 1)
         if args:
             for v, a in zip(args, self.__slots__):
                 setattr(self, a, v)
@@ -124,7 +124,7 @@ class Record(metaclass=SlotMaker):
         return tuple((getattr(self, n, None) for n in self.__slots__))
 
     def to_bytes(self):
-        return bytes(chr(self._version), 'utf8') + packb(self.to_tuple(), use_bin_type=True)
+        return bytearray(self._version) + packb(self.to_tuple(), use_bin_type=True)
 
     __bytes__ = as_foundationdb_value = to_bytes
 
@@ -135,7 +135,10 @@ class Record(metaclass=SlotMaker):
 
     @classmethod
     def from_bytes(cls, data):
-        version = data[0]
+        if six.PY3:
+            version = data[0]
+        else:
+            version = ord(data[0])
         if version > 10:
             # this is an old object, which is actually a dict
             val = do_unpack(data)
