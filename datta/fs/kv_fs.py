@@ -1,20 +1,66 @@
 from .base import BaseManager, Record, PermissionError, Perm, Owner, VersionedFile
 import os, os.path
 import hashlib
-import msgpack
 import time, datetime
 import six
 import operator
 import collections
 
 
-if six.PY2:
-    def to_timestamp(dt):
-        return time.mktime(dt.utctimetuple())
-else:
-    def to_timestamp(dt):
-        return dt.timestamp()
 
+class HistoryInfo(Record):
+    fields = [
+        ('path', str),
+        ('owner', str),
+        ('content_type', str),
+        ('rev', int),
+        ('length', int),
+        ('created', datetime.datetime),
+        ('bs', int),
+        ('meta', dict),
+        ('data', bytes)
+    ]
+
+
+class FileInfo(Record):
+    fields = [
+        ('rev', int),
+        ('created', datetime.datetime),
+        ('modified', datetime.datetime),
+        ('path', str),
+    ]
+
+class ListInfo(Record):
+    fields = [
+        ('path', str),
+        ('owner', str),
+        ('content_type', str),
+        ('rev', int),
+        ('length', int),
+        ('created', datetime.datetime),
+        ('bs', int),
+        ('meta', dict),
+        ('data', bytes),
+        ('modified', datetime.datetime)
+    ]
+
+class KVRecord(Record):
+    fields = [
+        ('value', None)
+    ]
+
+class ACLRecord(Record):
+    fields = [
+        ('acl', dict)
+    ]
+    @classmethod
+    def from_dict(cls, info, version=1):
+        if version != 0:
+            obj = Record.from_dict(cls, info, version=version)
+        else:
+            obj = cls()
+            obj.acl = info
+        return obj
 
 
 class BaseKVFSManager(BaseManager):
@@ -43,7 +89,7 @@ class BaseKVFSManager(BaseManager):
                     key = hk.unpack(k)
                     if len(key) > 1:
                         continue
-                    row = Record.from_bytes(v)
+                    row = HistoryInfo.from_bytes(v)
                     row.rev = key[0]
                     history.append(row)
 
@@ -62,11 +108,11 @@ class BaseKVFSManager(BaseManager):
             elif not exists:
                 active = {}
             else:
-                active = Record.from_bytes(bytes(active))
+                active = FileInfo.from_bytes(bytes(active))
                 rev = active.rev if rev is None else rev
         
             # renamed files have a reference to the old path
-            path = active.pop(u'path', path)
+            path = active.pop('path', path)
             if not isinstance(path, six.text_type):
                 path = path.decode('utf8')
             key = self.make_history_key(path)
@@ -81,7 +127,7 @@ class BaseKVFSManager(BaseManager):
                         rev = key.unpack(lastkey)[0]
                         val = tr[key[rev]]
         if val:
-            val = Record.from_bytes(bytes(val))
+            val = HistoryInfo.from_bytes(bytes(val))
             val.update(active)
             val.rev = rev
         return val
@@ -89,7 +135,7 @@ class BaseKVFSManager(BaseManager):
     def save_file_data(self, path, meta, buf, cipher=None):
         meta[u'bs'] = self.CHUNKSIZE
         rev = meta.get('rev', None)
-        meta[u'created'] = created = to_timestamp(meta[u'created'])
+        meta[u'created'] = created = meta[u'created']
         meta[u'path'] = path
         hist_key = self.make_history_key(path)
         hash_algo = meta.pop(u'hash', None)
@@ -103,32 +149,41 @@ class BaseKVFSManager(BaseManager):
                 modified = meta[u'created']
             else:
                 meta[u'rev'] = rev = self._get_next_rev(tr, path)
-                modified = time.time()
+                modified = datetime.datetime.utcnow()
 
-            # now write the chunks
-            cn = 0
+            hist = HistoryInfo(**meta)
             written = 0
-            while 1:
-                chunk = buf.read(self.CHUNKSIZE)
-                if not chunk:
-                    break
+            if meta[u'length'] <= self.CHUNKSIZE:
+                data = buf.read()
                 if hasher:
-                    hasher.update(chunk)
+                    hasher.update(data)
                 if cipher:
-                    chunk = cipher['encrypt'](chunk)
-                tr[hist_key[rev][cn]] = chunk
-                written += len(chunk)
-                cn += 1
-                # transactions can't be too big
-                if written >= self.TRANSIZE:
-                    # tr.commit().wait()
-                    tr.commit()
-                    six.print_('starting new transaction')
-                    tr = self._begin()
-                    written = 0
+                    data = cipher['encrypt'](data)
+                hist.data = data
+                six.print_(hist)
+            else:
+                # now write the chunks
+                cn = 0
+                while 1:
+                    chunk = buf.read(self.CHUNKSIZE)
+                    if not chunk:
+                        break
+                    if hasher:
+                        hasher.update(chunk)
+                    if cipher:
+                        chunk = cipher['encrypt'](chunk)
+                    tr[hist_key[rev][cn]] = chunk
+                    written += len(chunk)
+                    cn += 1
+                    # transactions can't be too big
+                    if written >= self.TRANSIZE:
+                        # tr.commit().wait()
+                        tr.commit()
+                        six.print_('starting new transaction')
+                        tr = self._begin()
+                        written = 0
             if hasher:
-                meta[u'meta'][hash_algo] = hasher.hexdigest()
-            hist = Record(meta)
+                hist.meta[hash_algo] = hasher.hexdigest()
             val = hist.to_bytes()
 
             tr[hist_key[rev]] = val
@@ -137,7 +192,7 @@ class BaseKVFSManager(BaseManager):
             written += len(val)
 
             # set the active key
-            tr[self._make_file_key(path)] = Record(created=created, modified=modified, rev=rev)
+            tr[self._make_file_key(path)] = FileInfo(created=created, modified=modified, rev=rev)
 
     def get_file_chunks(self, path, rev, cipher=None):
         key = self.make_history_key(path)
@@ -145,7 +200,7 @@ class BaseKVFSManager(BaseManager):
             decrypt = cipher['decrypt']
         else:
             decrypt = None
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             for i in tr.get_range(key[rev][0], key[rev + 1]):
                 data = i.value
                 if decrypt:
@@ -158,7 +213,7 @@ class BaseKVFSManager(BaseManager):
             decrypt = cipher['decrypt']
         else:
             decrypt = None
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             data = tr[key[rev][chunk]]
             if decrypt:
                 data = decrypt(data)
@@ -205,9 +260,9 @@ class BaseKVFSManager(BaseManager):
 
                 if not walk and path.count(delimiter) > nc:
                     continue
-                meta = Record.from_bytes(v)
-
-                meta.update(self.get_file_metadata(path, rev=meta[u'rev'], tr=tr))
+                meta = ListInfo()
+                meta.update(FileInfo.from_bytes(v))
+                meta.update(self.get_file_metadata(path, rev=meta.rev, tr=tr))
                 if open_files:
                     yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta)
                 else:
@@ -240,16 +295,19 @@ class BaseKVFSManager(BaseManager):
         with self._begin(write=True) as tr:
             self.check_perm(frompath, owner=owner, perm=Perm.write, tr=tr)
             self.check_perm(topath, owner=owner, perm=Perm.write, tr=tr)
-            active = self.get_file_metadata(frompath, None)
-            active['path'] = topath
+            active = self.get_file_metadata(frompath, None, tr=tr)
+            active.path = topath
             if record_move:
-                hist = Record({u'path': frompath,
-                              u'owner': owner,
-                              u'meta': {u'operation': u'mv', u'dest': topath}})
+                hist = HistoryInfo(path=frompath,
+                                 owner=owner,
+                                 meta={u'operation': u'mv', u'dest': topath})
                 rev = active.rev + 1
                 tr[self.make_history_key(frompath)[rev]] = hist.to_bytes()
                 self._record_repo_history(tr, hist, rev)
-            tr[self._make_file_key(topath)] = Record(created=to_timestamp(active.created), modified=time.time(), rev=active.rev, path=frompath).to_bytes()
+            tr[self._make_file_key(topath)] = FileInfo(created=active.created,
+                                                       modified=time.time(),
+                                                       rev=active.rev,
+                                                       path=frompath).to_bytes()
             del tr[self._make_file_key(frompath)]
 
         return 3
@@ -265,7 +323,7 @@ class BaseKVFSManager(BaseManager):
             fk = self._make_file_key(path)
             val = tr[fk]
             if val:
-                rev = Record.from_bytes(val).rev
+                rev = FileInfo.from_bytes(val).rev
                 del tr[fk]
             else:
                 return
@@ -276,14 +334,14 @@ class BaseKVFSManager(BaseManager):
                 # record the history of deletion
                 rev += 1
                 if force_timestamp:
-                    created = to_timestamp(force_timestamp)
+                    created = force_timestamp
                 else:
                     created = time.time()
-                meta = Record({u'path': path, 
-                        u'owner': owner,
-                        u'meta': {u'operation': u'del'},
-                        u'created': created,
-                       })
+                meta = HistoryInfo(path=path, 
+                                    owner=owner,
+                                    meta={u'operation': u'del'},
+                                    created=created,
+                       )
                 tr[self.make_history_key(path)[rev]] = meta
                 self._record_repo_history(tr, meta, rev)
                 return True
@@ -318,6 +376,7 @@ class BaseKVFSManager(BaseManager):
         found = self._is_in_repo(tr, meta.path)
         if found:
             repokey = found['key']
+            meta.data = None
             tr[repokey[rev]] = meta.to_bytes()
             return True
 
@@ -332,7 +391,7 @@ class BaseKVFSManager(BaseManager):
                 if not val:
                     tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
             keyrange = slice(key.key(), self._repos[directory, None].key())
-            config['is_repo']['key'] = key
+            config['is_repo']['key'] = key.key()
             config['is_repo']['range'] = (keyrange.start, keyrange.stop)
             self.set_path_config(directory, config)
         else:
@@ -369,7 +428,7 @@ class BaseKVFSManager(BaseManager):
         with self._begin() as tr:
             for k, v in tr.get_range(start, end, reverse=True):
                 rev = key.unpack(k)[0]
-                rec = Record.from_bytes(v)
+                rec = HistoryInfo.from_bytes(v)
                 rec.rev = rev
                 yield rec
 
@@ -389,11 +448,8 @@ class BaseKVFSManager(BaseManager):
             val = tr[self._kv[path]]
 
         if val != None:
-            rec = Record.from_bytes(bytes(val))
-            if u'__value' in rec:
-                return rec[u'__value']
-            else:
-                return rec
+            rec = KVRecord.from_bytes(bytes(val)).value
+            return rec
         else:
             return None
 
@@ -402,9 +458,9 @@ class BaseKVFSManager(BaseManager):
         sets the data as a msgpack string
         """
         key = self._kv[path]
-        if not isinstance(data, dict):
-            data = {u'__value': data}
-        val = Record(data).to_bytes()
+        rec = KVRecord()
+        rec.value = data
+        val = rec.to_bytes()
         with self._begin(write=True) as tr:
             tr[key] = val
 
@@ -437,7 +493,7 @@ class BaseKVFSManager(BaseManager):
                 key = basekey[ppath]
                 acl = tr[key]
                 if acl:
-                    acl = Record.from_bytes(acl)
+                    acl = ACLRecord.from_bytes(acl).acl
                     break
                 ppath.pop(-1)
         return acl
@@ -445,7 +501,9 @@ class BaseKVFSManager(BaseManager):
     def set_acl(self, path, acl):
         ppath = self._perm_path(path)
         key = self._perms[ppath]
-        val = Record(acl).to_bytes()
+        rec = ACLRecord()
+        rec.acl = acl
+        val = rec.to_bytes()
         with self._begin(write=True) as tr:
             if acl:
                 tr[key] = val
@@ -471,7 +529,7 @@ class BaseKVFSManager(BaseManager):
                 up = hist.unpack(k)
                 phash = up[0][0]
                 if phash not in found and len(up[1:]) == 1:
-                    v = Record.from_bytes(v)
+                    v = HistoryInfo.from_bytes(v)
                     if v.path:
                         print(v.path)
                     else:

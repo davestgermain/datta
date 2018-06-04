@@ -5,10 +5,10 @@ import hashlib
 import uuid
 import mimetypes
 from tempfile import SpooledTemporaryFile
-import msgpack
 import datetime, time
 from collections import namedtuple
 import six
+from datta.pack import Record
 
 try:
     PermissionError = PermissionError
@@ -39,43 +39,6 @@ class Owner:
     ROOT = u'root'
 
 
-class Record(dict):
-    def __getattr__(self, key):
-        try:
-            return self[key]
-        except KeyError:
-            raise AttributeError(key)
-
-    def __setattr__(self, key, value):
-        self[key] = value
-
-    @classmethod
-    def from_bytes(cls, data):
-        unpacked = {}
-        if six.PY3:
-            val = msgpack.unpackb(data, raw=False)
-        else:
-            val = msgpack.unpackb(data, encoding='utf8')
-        for k, v in val.items():
-            if not isinstance(k, six.text_type):
-                k = k.decode('utf8')
-            unpacked[k] = v
-        obj = cls(unpacked)
-        for k in (u'created', u'modified'):
-            v = obj.get(k, None)
-            if v:
-                obj[k] = datetime.datetime.utcfromtimestamp(v)
-        return obj
-
-    if six.PY3:
-        def to_bytes(self):
-            return msgpack.packb(self, use_bin_type=False)
-    else:
-        def to_bytes(self):
-            return msgpack.packb(self, use_bin_type=True, encoding='utf8')
-
-    as_foundationdb_value = to_bytes
-
 
 class BaseManager(abc.ABC):
     def __init__(self, dsn='', debug=False, **kwargs):
@@ -86,10 +49,13 @@ class BaseManager(abc.ABC):
         self.set_perm(u'/', Owner.ROOT, Perm.ALL)
 
     def __repr__(self):
-        return '%s%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn)
+        return '%s.%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn)
 
     @abc.abstractmethod
     def _setup(self):
+        pass
+
+    def close(self):
         pass
 
     @abc.abstractmethod
@@ -186,6 +152,32 @@ class BaseManager(abc.ABC):
             fp.meta.update(meta)
         self.set_perm(dirname, owner, Perm.ALL)
 
+    def _copyone(self, fromfile, to_file):
+        to_file.owner = fromfile.owner
+        to_file.meta = fromfile.meta
+        to_file.content_type = getattr(fromfile, 'content_type', None)
+        to_file.created = fromfile.created
+        to_file.modified = fromfile.modified
+        to_file.force_rev = fromfile.rev
+        blocksize = getattr(fromfile, 'bs', 8192)
+        while 1:
+            chunk = fromfile.read(blocksize)
+            if not chunk:
+                break
+            to_file.write(chunk)
+        
+    def copyinto(self, other_manager, shallow=True, dest=u'/'):
+        for fp in other_manager.listdir(u'/', open_files=True, owner=Owner.ROOT, walk=True):
+            all_files = [fp]
+            if not shallow:
+                all_files.extend([other_manager.open(p.path, owner=Owner.ROOT, rev=p.rev) for p in other_manager.get_meta_history(fp.path) if p.rev != fp.rev])
+            for fp in all_files:
+                to_path = os.path.join(dest, *fp.path.split(u'/'))
+                with self.open(to_path, mode=Perm.write, owner=Owner.ROOT) as to_file:
+                    self._copyone(fp, to_file)
+                fp.close()
+            six.print_(to_file.path)
+                    
     @abc.abstractmethod
     def delete(self, path, owner=Owner.ALL, include_history=False, force_timestamp=None):
         """
@@ -317,7 +309,7 @@ class BaseManager(abc.ABC):
             except FileNotFoundError:
                 if create:
                     self.set_path_config(path, kwargs)
-        return Record(kwargs)
+        return Record.from_dict(kwargs)
 
     def set_path_config(self, path, config):
         """
@@ -325,7 +317,7 @@ class BaseManager(abc.ABC):
         """
         configpath = u'/'.join(path.split(u'/')[:2])
         if not isinstance(config, Record):
-            config = Record(config)
+            config = Record.from_dict(config)
         with self.open(configpath, mode=Perm.write, owner=Owner.ROOT) as fp:
             fp.content_type = u'application/x-directory'
             fp.write(config.to_bytes())
@@ -520,15 +512,21 @@ class VersionedFile(io.BufferedIOBase):
     def read(self, size=-1):
         if self.mode != Perm.read:
             return
+        elif self._pos == self.length:
+            return b''
         buf = bytearray()
         if self._pos == 0 and size == -1:
-            # optimization for reading the whole file
-            i = 0
-            for chunk in self.manager.get_file_chunks(self.path, self.rev, cipher=self._cipher):
-                i+= 1
-                buf.extend(chunk)
-            self._pos = len(buf)
-            return bytes(buf)
+            if self.data:
+                self._pos = self.length
+                return self.data
+            else:
+                # optimization for reading the whole file
+                i = 0
+                for chunk in self.manager.get_file_chunks(self.path, self.rev, cipher=self._cipher):
+                    i+= 1
+                    buf.extend(chunk)
+                self._pos = len(buf)
+                return bytes(buf)
 
         length = size if size > 0 else self.length
         where, pos = divmod(self._pos, self.bs)
@@ -594,4 +592,6 @@ class VersionedFile(io.BufferedIOBase):
             'encrypt': lambda chunk: b''.join(c.encrypt_cfb(chunk, iv)),
             'decrypt': lambda chunk: b''.join(c.decrypt_cfb(chunk, iv)),
         }
+        if self.data:
+            self._curr_chunk = self._cipher['decrypt'](self.data)
 

@@ -71,13 +71,13 @@ class FsTests(unittest.TestCase):
             self.assertEqual(fp.read(read), comp.read(read))
 
     def test_perms(self):
-        self.man.clear_perm('/test/public/filename', '*', 'rwd')
+        self.man.set_acl('/test/public/filename', {})
         self.man.clear_perm('/test/public', '*', 'rwd')
         self.man.set_perm('/test/', 'test', 'r')
         self.assertTrue(self.man.check_perm('/test/', 'test', 'r', raise_exception=False))
         self.assertRaises(fs.PermissionError, self.man.check_perm, '/test/', 'badguy', 'r')
         self.assertTrue(self.man.check_perm('/test/foo', 'test', 'r', raise_exception=False))
-        self.man.set_perm('/test/public', '*', 'r')
+        self.man.set_perm('/test/public/', '*', 'r')
         self.assertTrue(self.man.check_perm('/test/public/filename', 'foo', 'r', raise_exception=False))
         self.assertFalse(self.man.check_perm('/test/public/filename', 'foo', 'w', raise_exception=False))
         self.man.set_perm('/test/public/filename', '*', 'w')

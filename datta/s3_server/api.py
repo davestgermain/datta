@@ -150,6 +150,7 @@ class ObjectView(HTTPMethodView):
         except FileNotFoundError:
             return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
+            log.logger.debug('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
         # except KeyError:
         #     # if this bucket is a "website", try serving an index.html

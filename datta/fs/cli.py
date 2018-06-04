@@ -71,10 +71,10 @@ def main():
                 six.print_(row)
                 six.print_('=' * (len(row) +32))
                 printed = True
-            p['created'] = p.created.strftime(timeformat)
-            p['modified'] = p.modified.strftime(timeformat)
-            p['content_type'] = six.text_type(p.content_type or '')
-            row = templ.format(**p)
+            p.created = p.created.strftime(timeformat)
+            p.modified = p.modified.strftime(timeformat)
+            p.content_type = six.text_type(p.get('content_type', ''))
+            row = templ.format(**p.to_dict())
             six.print_(row)
     elif args.command == 'cat':
         with man.open(args.path, mode='r', rev=args.version, owner=owner) as fp:

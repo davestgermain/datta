@@ -43,6 +43,7 @@ def main():
     import argparse
     import os.path
     import sys
+    import atexit
 
     parser = argparse.ArgumentParser(prog='datta.s3_server', description='start the s3 compatible server')
     parser.add_argument('-d', default='fdb', dest='dsn', help='DSN for file manager')
@@ -62,7 +63,8 @@ def main():
     if app.root_host:
         app.middleware('request')(handle_wildcard)
         
-    app.fs = get_manager(args.dsn, event_model='asyncio')
+    app.fs = get_manager(args.dsn, debug=args.debug, event_model='asyncio')
+    atexit.register(app.fs.close)
     if args.cert_path:
         import ssl
         ssl_context = ssl.SSLContext()

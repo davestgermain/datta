@@ -41,30 +41,29 @@ class DBProxy(object):
             start = start.key()
         if hasattr(end, 'key'):
             end = end.key()
-        cursor = self.txn.cursor()
-        if reverse:
-            range_func = cursor.iterprev
-            start, end = end, start
-            comparator = operator.lt
-        else:
-            range_func = cursor.iternext
-            comparator = operator.gt
         count = 0
-        # print('get_range', start, end, reverse, limit)
-        found = cursor.set_range(start)
-        for key, value in range_func(keys=True, values=True):
-            key = bytes(key)
+        with self.txn.cursor() as cursor:
+            if reverse:
+                range_func = cursor.iterprev
+                start, end = end, start
+                comparator = operator.lt
+            else:
+                range_func = cursor.iternext
+                comparator = operator.gt
+            # print('get_range', start, end, reverse, limit)
+            found = cursor.set_range(start)
+            for key, value in range_func(keys=True, values=True):
+                key = bytes(key)
 
-            if reverse and key > start:
-                # count += 1
-                continue
-            if comparator(key, end):
-                break
-            yield KeyValue(key, value)
-            count += 1
-            if limit and count > limit:
-                break
-        cursor.close()
+                if reverse and key > start:
+                    # count += 1
+                    continue
+                if comparator(key, end):
+                    break
+                yield KeyValue(key, value)
+                count += 1
+                if limit and count > limit:
+                    break
 
     def commit(self):
         self.txn.commit()
@@ -120,9 +119,13 @@ class FSManager(BaseKVFSManager):
         self._repos = subspace.Subspace((u'repo', ))
         self._perms = subspace.Subspace((u'perms', ))
         self._active_repos = {}
+        self.CHUNKSIZE = 1080
 
-    def _begin(self, write=False):
-        txn = self.env.begin(write=write)
+    def close(self):
+        self.env.close()
+
+    def _begin(self, write=False, **kwargs):
+        txn = self.env.begin(write=write, **kwargs)
         return DBProxy(self.env, txn)
 
 

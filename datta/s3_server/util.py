@@ -90,9 +90,10 @@ def good_response(request, fileobj, headers=None):
             to_read = fileobj.length
         async def iterator(resp):
             nonlocal to_read
+            blocksize = getattr(fileobj, 'bs', 8192)
             with fileobj:
                 while to_read > 0:
-                    chunk = await asynread(fileobj, min(to_read, 8192))
+                    chunk = await asynread(fileobj, min(to_read, blocksize))
                     if chunk:
                         resp.write(chunk)
                         to_read -= len(chunk)
