@@ -55,7 +55,9 @@ class SlotMaker(type):
     def __new__(cls, name, bases, cdict):
         fields = cdict.get('fields', [])
         slots = []
+        fieldnames = []
         for field, ftype in fields:
+            fieldnames.append(field)
             if ftype == datetime:
                 rfield = '_' + field
                 cdict[field] = cls.make_datetime_prop(rfield)
@@ -68,6 +70,7 @@ class SlotMaker(type):
         if not slots:
             slots.append('__dict__')
         cdict['__slots__'] = tuple(slots)
+        cdict['fieldnames'] = tuple(fieldnames)
         return super(SlotMaker, cls).__new__(cls, name, bases, cdict)
 
 
@@ -115,10 +118,10 @@ class Record(object):
                 setattr(self, k, v)
     
     def items(self):
-        return [(k, getattr(self, k, None)) for k in self.__slots__]
+        return [(k, getattr(self, k, None)) for k in self.fieldnames]
 
     def to_dict(self):
-        return {k[0]: getattr(self, k[0], None) for k in self.fields}
+        return {k: getattr(self, k, None) for k in self.fieldnames}
 
     def to_tuple(self):
         return tuple((getattr(self, n, None) for n in self.__slots__))

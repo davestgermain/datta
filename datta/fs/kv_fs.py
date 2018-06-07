@@ -64,9 +64,10 @@ class ACLRecord(Record):
 
 
 class BaseKVFSManager(BaseManager):
-    CHUNKSIZE = 64 * 1024
     TRANSIZE = 8 * 1024 * 1024
     
+    def _get_chunksize(self, meta):
+        return 65536
 
     def get_meta_history(self, path):
         """
@@ -126,15 +127,16 @@ class BaseKVFSManager(BaseManager):
                     if key.contains(lastkey):
                         rev = key.unpack(lastkey)[0]
                         val = tr[key[rev]]
+        combined = ListInfo()
         if val:
-            val = HistoryInfo.from_bytes(bytes(val))
-            val.update(active)
-            val.rev = rev
-        return val
+            hist = HistoryInfo.from_bytes(bytes(val))
+            combined.update(hist)
+            combined.update(active)
+            combined.rev = rev
+        return combined
 
     def save_file_data(self, path, meta, buf, cipher=None):
-        meta[u'bs'] = self.CHUNKSIZE
-        rev = meta.get('rev', None)
+        rev = meta.get(u'rev', None)
         meta[u'created'] = created = meta[u'created']
         meta[u'path'] = path
         hist_key = self.make_history_key(path)
@@ -143,7 +145,8 @@ class BaseKVFSManager(BaseManager):
             hasher = getattr(hashlib, hash_algo)()
         else:
             hasher = None
-        
+        meta[u'bs'] = self._get_chunksize(meta)
+
         with self._begin(write=True) as tr:
             if rev is not None:
                 modified = meta[u'created']
@@ -153,19 +156,19 @@ class BaseKVFSManager(BaseManager):
 
             hist = HistoryInfo(**meta)
             written = 0
-            if meta[u'length'] <= self.CHUNKSIZE:
+            if hist.length <= hist.bs:
                 data = buf.read()
                 if hasher:
                     hasher.update(data)
                 if cipher:
                     data = cipher['encrypt'](data)
                 hist.data = data
-                six.print_(hist)
+                six.print_(repr(hist))
             else:
                 # now write the chunks
                 cn = 0
                 while 1:
-                    chunk = buf.read(self.CHUNKSIZE)
+                    chunk = buf.read(hist.bs)
                     if not chunk:
                         break
                     if hasher:

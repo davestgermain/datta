@@ -565,8 +565,6 @@ class VersionedFile(io.BufferedIOBase):
 
     def update(self, kwargs):
         for k, v in kwargs.items():
-            if k in ('created', 'modified') and isinstance(v, float):
-                v = datetime.datetime.utcfromtimestamp(v)
             setattr(self, k, v)
 
     def set_encryption(self, password='', save_password=False):
