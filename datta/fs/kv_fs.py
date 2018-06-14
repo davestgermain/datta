@@ -163,7 +163,7 @@ class BaseKVFSManager(BaseManager):
                 if cipher:
                     data = cipher['encrypt'](data)
                 hist.data = data
-                six.print_(repr(hist))
+                # six.print_(repr(hist))
             else:
                 # now write the chunks
                 cn = 0
@@ -267,7 +267,7 @@ class BaseKVFSManager(BaseManager):
                 meta.update(FileInfo.from_bytes(v))
                 meta.update(self.get_file_metadata(path, rev=meta.rev, tr=tr))
                 if open_files:
-                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta)
+                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta.to_dict())
                 else:
                     if owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
                         continue
@@ -387,15 +387,15 @@ class BaseKVFSManager(BaseManager):
         directory = six.text_type(directory)
         config = self.get_path_config(directory)
         if not config.get('is_repo'):
-            config['is_repo'] = {}
+            config.is_repo = {}
             key = self._repos[directory]
             with self._begin(write=True) as tr:
                 val = tr[key[None]]
                 if not val:
                     tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
             keyrange = slice(key.key(), self._repos[directory, None].key())
-            config['is_repo']['key'] = key.key()
-            config['is_repo']['range'] = (keyrange.start, keyrange.stop)
+            config.is_repo['key'] = key.key()
+            config.is_repo['range'] = (keyrange.start, keyrange.stop)
             self.set_path_config(directory, config)
         else:
             repo = config.get('is_repo')

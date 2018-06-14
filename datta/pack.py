@@ -114,7 +114,8 @@ class Record(object):
 
     def update(self, otherdict):
         for k, v in otherdict.items():
-            if v is not None:
+            mine = getattr(self, k, None)
+            if mine is None or (v and mine != v):
                 setattr(self, k, v)
     
     def items(self):
@@ -127,7 +128,7 @@ class Record(object):
         return tuple((getattr(self, n, None) for n in self.__slots__))
 
     def to_bytes(self):
-        return bytearray(self._version) + packb(self.to_tuple(), use_bin_type=True)
+        return bytes(bytearray(self._version)) + packb(self.to_tuple(), use_bin_type=True)
 
     __bytes__ = as_foundationdb_value = to_bytes
 
