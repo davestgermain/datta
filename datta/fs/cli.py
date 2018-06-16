@@ -58,10 +58,10 @@ def main():
 
     owner = os.getlogin()
     if args.command == 'ls':
-        templ = u'{path:48}\t{length:8}\t{created:26}\t{modified:26}'
+        templ = u'{path:64}{length:8} {created:20} {modified:20}'
         kwargs = dict(path='Path', length='Size', created='Created', modified='Modified')
         if args.detail:
-            templ += u'\t{rev:4}\t{content_type:20}\t{meta}'
+            templ += u' {rev:4} {content_type:20} {meta}'
             kwargs.update({'rev': 'Rev', 'meta': 'Meta', 'content_type': 'Content-Type'})
         row = templ.format(**kwargs)
         printed = False
