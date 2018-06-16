@@ -1,4 +1,4 @@
-from .kv_fs import BaseKVFSManager, Record
+from .kv_fs import BaseKVFSManager, ACLRecord
 from contextlib import contextmanager
 import fdb
 import six
@@ -7,12 +7,19 @@ import ctypes
 fdb.api_version(510)
 
 class CtxTransaction(fdb.Transaction):
+    def __init__(self, ptr, db):
+        fdb.Transaction.__init__(self, ptr, db)
+        self.enter_count = 0
+
     def __enter__(self):
+        self.enter_count += 1
         return self
 
     def __exit__(self, type, exc, tb):
         if not exc:
-            self.commit().wait()
+            self.enter_count -= 1
+            if self.enter_count == 0:
+                self.commit().wait()
         else:
             self.cancel()
             six.reraise(type, exc, tb)
@@ -38,14 +45,13 @@ class FSManager(BaseKVFSManager):
             self._perms = fdb.directory.create_or_open(tr, u'perms')
             self._active_repos = {}
     
-    def _begin(self, write=False):
+    def _begin(self, write=False, buffers=False):
         pointer = ctypes.c_void_p()
         self.db.capi.fdb_database_create_transaction(self.db.dpointer, ctypes.byref(pointer))
         return CtxTransaction(pointer.value, self.db)
 
     def get_acl(self, path, tr=None):
-        if tr is None:
-            tr = self._begin()
+        # tr = tr or self._begin()
         ppath = self._perm_path(path)
         basekey = self._perms
         acl = None
@@ -54,6 +60,7 @@ class FSManager(BaseKVFSManager):
                 key = basekey[ppath]
                 acl = tr[key]
                 if acl != None:
-                    return Record.from_bytes(acl.value)
+                    acl = ACLRecord.from_bytes(acl.value).acl
+                    break
                 ppath.pop(-1)
-        return {}
+        return acl

@@ -218,7 +218,7 @@ class BaseManager(abc.ABC):
         if owner in acl:
             for p in perm:
                 try:
-                    acl[owner].remove(perm)
+                    acl[owner] = [k for k in acl[owner] if k != perm]
                 except ValueError:
                     continue
         self.set_acl(path, acl)

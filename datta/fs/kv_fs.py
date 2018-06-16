@@ -349,6 +349,22 @@ class BaseKVFSManager(BaseManager):
                 self._record_repo_history(tr, meta, rev)
                 return True
 
+    def delete_old_versions(self, path, owner=u'*', maxrev=-1):
+        path = os.path.normpath(path)
+        fk = self._make_file_key(path)
+        basekey = self.make_history_key(path)
+
+        with self._begin(write=True) as tr:
+            self.check_perm(path, owner=owner, perm=Perm.delete, tr=tr)
+            val = tr[fk]
+            if val:
+                if maxrev == -1:
+                    rev = FileInfo.from_bytes(val).rev - 1
+                else:
+                    rev = maxrev
+                kr = slice(basekey[0], basekey[rev])
+                del tr[kr]
+
     def _get_next_rev(self, tr, path):
         found = self._is_in_repo(tr, path)
         if found:
