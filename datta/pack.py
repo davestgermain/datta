@@ -87,6 +87,18 @@ class Record(object):
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
+    def __eq__(self, other):
+        if hasattr(other, 'to_tuple'):
+            return self.to_tuple() == other.to_tuple()
+        else:
+            for a, b in zip(self, other):
+                if a != b:
+                    return False
+            return True
+
+    def __iter__(self):
+        return iter(self.to_tuple())
+
     def __repr__(self):
         return self.__class__.__name__ + repr(self.to_tuple())
 
