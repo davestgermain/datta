@@ -18,7 +18,7 @@ class DBStorage(Storage):
     def create(self):
         self.fs.set_perm(self.prefix, u'*', u'rwd')
         config = self.fs.get_path_config(self.prefix)
-        if not config.get('versioning', None):
+        if config.get('versioning', None) is None:
             config.versioning = False
             self.fs.set_path_config(self.prefix, config)
 
@@ -59,6 +59,7 @@ class DBStorage(Storage):
         uf = self.fs.open(path, mode=mode)
         if mode == u'w':
             uf.content_type = 'application/structfile'
+            uf.force_rev = 0
         sf = StructFile(uf)
         sf.is_real = False
         sf.fileno = None
