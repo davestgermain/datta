@@ -5,19 +5,22 @@ import os
 import io
 
 
-def test_get_default_manager():
-    man = fs.get_manager()
-    assert man.dsn == 'fdb'
+# def test_get_default_manager():
+#     man = fs.get_manager()
+#     assert man.dsn == 'fdb'
 
-class FsTests(unittest.TestCase):
-    dsn = 'fdb'
+class LMDBTests(unittest.TestCase):
+    dsn = 'lmdb:///tmp/testfs/'
+
+    def tearDown(self):
+        tdir = '/tmp/testfs/'
+        for p in os.listdir(tdir):
+            p = os.path.join(tdir, p)
+            os.unlink(p)
+
     def setUp(self):
         self.man = fs.get_manager(self.dsn)
         self.man.set_perm('/test', 'test', 'rwd')
-
-    def tearDown(self):
-        self.man.rmtree('/test/', include_history=True)
-        self.man.clear_perm('/test', 'test', 'rwd')
 
     def test_read_missing(self):
         self.assertRaises(FileNotFoundError, self.man.open, '/test/missing/file', mode='r', owner='test')
@@ -92,13 +95,30 @@ class FsTests(unittest.TestCase):
         self.assertEqual(self.man['testkey']['val'], -1.3)
         del self.man['testkey']
 
-class LMDBTests(FsTests):
-    dsn = 'lmdb:///tmp/testfs/'
-    def tearDown(self):
-        tdir = '/tmp/testfs/'
-        for p in os.listdir(tdir):
-            p = os.path.join(tdir, p)
-            os.unlink(p)
+    def test_repo(self):
+        rdir = '/test/repo/'
+        self.man.create_repository(rdir)
+        self.assertEqual(self.man.repo_rev(rdir), -1)
+        with self.man.open(os.path.join(rdir, 'first'), owner='test', mode='w') as fp:
+            fp.write('first file')
+        self.assertEqual(self.man.repo_rev(rdir), 0)
+        with self.man.open(os.path.join(rdir, 'second'), owner='test', mode='w') as fp:
+            fp.write('second file')
+        self.assertEqual(self.man.repo_rev(rdir), 1)
+        with self.man.open(os.path.join(rdir, 'second'), owner='test', mode='r') as fp:
+            self.assertEqual(fp.rev, 1)
+        with self.man.open(os.path.join(rdir, 'first'), owner='test', mode='w') as fp:
+            fp.write('first file, rev 2')
+        self.assertEqual(self.man.repo_rev(rdir), 2)
+        self.assertEqual(self.man.get_file_metadata(os.path.join(rdir, 'first'), None).rev, 2)
+        self.assertEqual(len(list(self.man.repo_history(rdir))), 3)
+
+
+# class FDBTests(FsTests):
+#     dsn = 'fdb'
+#     def tearDown(self):
+#         self.man.rmtree('/test/', include_history=True)
+#         self.man.clear_perm('/test', 'test', 'rwd')
 
 if __name__ == '__main__':
     unittest.main()

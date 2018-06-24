@@ -59,30 +59,28 @@ class TransactionalEnvironment(object):
                 comparator = operator.gt
             # print('get_range', start, end, reverse, limit)
             found = cursor.set_range(start)
-            if found:
-                for row in range_func(keys=True, values=values):
-                    if keys and values:
-                        key, value = row
-                        key = bytes(key)
-                    elif keys:
-                        key = bytes(row)
-                        value = None
-                    elif values:
-                        value = row
-                        key = None
+            for row in range_func(keys=True, values=values):
+                if keys and values:
+                    key, value = row
+                    key = bytes(key)
+                elif keys:
+                    key = bytes(row)
+                    value = None
+                elif values:
+                    value = row
+                    key = None
 
-                    if reverse and key > start:
-                        # count += 1
-                        continue
-                    if comparator(key, end):
-                        break                
-                    if do_clear:
-                        if not cursor.delete():
-                            break
-                    yield KeyValue(key, value)
-                    count += 1    
-                    if limit and count > limit:
+                if reverse and key > start:
+                    continue
+                if comparator(key, end):
+                    break                
+                if do_clear:
+                    if not cursor.delete():
                         break
+                yield KeyValue(key, value)
+                count += 1
+                if limit and count == limit:
+                    break
 
     def commit(self):
         self.txn.commit()

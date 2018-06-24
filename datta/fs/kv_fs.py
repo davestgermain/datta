@@ -77,7 +77,7 @@ class BaseKVFSManager(BaseManager):
         if not isinstance(path, six.text_type):
             path = path.decode('utf8')
         if path.endswith(u'/'):
-            paths = [p[u'path'] for p in self.listdir(path, walk=True)]
+            paths = [p.path for p in self.listdir(path, walk=True)]
         else:
             paths = [path]
         history = []
@@ -410,12 +410,14 @@ class BaseKVFSManager(BaseManager):
                 if not val:
                     tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
             keyrange = slice(key.key(), self._repos[directory, None].key())
+            # keyrange = key.range()
             config.is_repo['key'] = key.key()
             config.is_repo['range'] = (keyrange.start, keyrange.stop)
             self.set_path_config(directory, config)
         else:
             repo = config.get('is_repo')
-            key = repo['key']
+            key = self._repos.__class__(rawPrefix=repo['key'])
+            # keyrange = key.range()
             keyrange = slice(repo['range'][0], repo['range'][1])
         self._active_repos[directory] = {'key': key, 'range': keyrange}
 
@@ -433,7 +435,10 @@ class BaseKVFSManager(BaseManager):
                 return self._repo_rev(tr, found)
     
     def _repo_rev(self, tr, found):
-        latest = list(tr.get_range(found['range'].start, found['range'].stop, limit=1, reverse=True))[0]
+        try:
+            latest = list(tr.get_range(found['range'].start, found['range'].stop, limit=1, reverse=True))[0]
+        except IndexError:
+            return -1
         rev = found['key'].unpack(latest.key)[0]
         if rev is None:
             rev = -1
@@ -454,7 +459,7 @@ class BaseKVFSManager(BaseManager):
     def repo_changed_files(self, repository, since=-1):
         seen = set()
         for rec in self.repo_history(repository, since=since):
-            path = rec['path']
+            path = rec.path
             if path not in seen:
                 yield path
                 seen.add(path)

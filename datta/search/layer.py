@@ -18,8 +18,8 @@ class DBStorage(Storage):
     def create(self):
         self.fs.set_perm(self.prefix, u'*', u'rwd')
         config = self.fs.get_path_config(self.prefix)
-        if 'versioning' not in config:
-            config['versioning'] = False
+        if not config.get('versioning', None):
+            config.versioning = False
             self.fs.set_path_config(self.prefix, config)
 
     def _topath(self, name):
@@ -52,11 +52,14 @@ class DBStorage(Storage):
         return iter(l)
 
     def list(self):
-        return [p.path.replace(self.prefix, u'') for p in self.fs.listdir(self.prefix) if p.content_type != u'application/x-directory']
+        return [p.path.replace(self.prefix, u'') for p in self.fs.listdir(self.prefix) if p.get('content_type') != u'application/x-directory']
 
     def open_file(self, name, mode=u'r'):
         path = self._topath(name)
-        sf = StructFile(self.fs.open(path, mode=mode))
+        uf = self.fs.open(path, mode=mode)
+        if mode == u'w':
+            uf.content_type = 'application/structfile'
+        sf = StructFile(uf)
         sf.is_real = False
         sf.fileno = None
         return sf
