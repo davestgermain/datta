@@ -156,7 +156,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     if versions:
         element = 'ListVersionsResult'
 
-    iterator = fs.listdir(path, owner=owner, delimiter=delimiter, limit=maxkeys, walk=not delimiter)
+    iterator = fs.listdir(path, owner=owner or '*', delimiter=delimiter, limit=maxkeys, walk=not delimiter)
     preamble = '''<?xml version="1.0" encoding="UTF-8"?>'''\
 '''<%s xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
         <Name>%s</Name>
