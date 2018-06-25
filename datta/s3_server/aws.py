@@ -168,7 +168,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
 
 
     bucket_prefix = '/%s/' % bucket
-    # bucket_prefix += prefix
+
     contents, count, last_key, is_truncated, subdirs, last_marker = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
     yield preamble
     yield from contents
@@ -188,7 +188,9 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
                     next_token = cp
                 # cp = cp.replace(bucket_prefix, '', 1)
                 if cp:
-                    yield '<CommonPrefixes><Prefix>%s%s</Prefix></CommonPrefixes>' % (cp, delimiter)
+                    if not cp.endswith('/'):
+                        cp += '/'
+                    yield '<CommonPrefixes><Prefix>%s</Prefix></CommonPrefixes>' % cp
                     last_marker = cp
             yield '<NextContinuationToken>%s</NextContinuationToken>' % next_token
     yield '<NextMarker>%s</NextMarker>' % last_marker
