@@ -457,11 +457,9 @@ class VersionedFile(io.BufferedIOBase):
                 u'meta': self.meta,
                 u'owner': getattr(self, 'owner', None),
                 u'length': length,
-                u'hash': self.hash
+                u'hash': self.hash,
+                u'created': datetime.datetime.utcnow()
             }
-            if not self.created:
-                self.created = datetime.datetime.utcnow()
-            hist_data[u'created'] = created = self.created
             content_type = getattr(self, 'content_type', None)
             if not content_type:
                 content_type = mimetypes.guess_type(self.path)[0]
@@ -469,6 +467,8 @@ class VersionedFile(io.BufferedIOBase):
 
             if getattr(self, 'force_rev', None) is not None:
                 hist_data[u'rev'] = rev = self.force_rev
+                if self.created:
+                    hist_data[u'created'] = self.created
 
             self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)
 

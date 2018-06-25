@@ -31,7 +31,7 @@ class SlotMaker(type):
         def getter(self):
             val = getattr(self, attrname, None)
             if isinstance(val, float):
-                val = datetime.utcfromtimestamp(val)
+                val = datetime.fromtimestamp(val)
             return val
         def setter(self, dt):
             setattr(self, attrname, to_timestamp(dt))

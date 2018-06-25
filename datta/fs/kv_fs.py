@@ -6,6 +6,7 @@ import six
 import operator
 import collections
 
+now = datetime.datetime.utcnow
 
 
 class HistoryInfo(Record):
@@ -94,7 +95,7 @@ class BaseKVFSManager(BaseManager):
                     row.rev = key[0]
                     history.append(row)
 
-        history.sort(key=operator.attrgetter('created'), reverse=True)
+        history.sort(key=operator.attrgetter('rev'), reverse=True)
         return history
 
     def get_file_metadata(self, path, rev, tr=None):
@@ -153,7 +154,7 @@ class BaseKVFSManager(BaseManager):
                 modified = meta[u'created']
             else:
                 meta[u'rev'] = rev = self._get_next_rev(tr, path)
-                modified = datetime.datetime.utcnow()
+                modified = now()
 
             hist = HistoryInfo(**meta)
             written = 0
@@ -309,7 +310,7 @@ class BaseKVFSManager(BaseManager):
                 tr[self.make_history_key(frompath)[rev]] = hist.to_bytes()
                 self._record_repo_history(tr, hist, rev)
             tr[self._make_file_key(topath)] = FileInfo(created=active.created,
-                                                       modified=time.time(),
+                                                       modified=now(),
                                                        rev=active.rev,
                                                        path=frompath).to_bytes()
             del tr[self._make_file_key(frompath)]
@@ -340,7 +341,7 @@ class BaseKVFSManager(BaseManager):
                 if force_timestamp:
                     created = force_timestamp
                 else:
-                    created = time.time()
+                    created = now()
                 meta = HistoryInfo(path=path, 
                                     owner=owner,
                                     meta={u'operation': u'del'},
