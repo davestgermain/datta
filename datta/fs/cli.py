@@ -4,6 +4,7 @@ import six
 import sys
 import os.path
 import os
+from pprint import pprint
 from . import get_manager, Perm
 
 def main():
@@ -82,9 +83,15 @@ def main():
             fn = sys.stdout.fileno()
             if os.isatty(fn):
                 try:
-                    six.print_(fp.read().decode('utf8'))
+                    data = fp.read()
+                    six.print_(data.decode('utf8'))
                 except UnicodeDecodeError:
-                    six.print_('==== BINARY NOT SHOWN ====')
+                    if fp.content_type == 'application/x-directory':
+                        from datta import pack
+                        rec = pack.Record.from_bytes(data)
+                        pprint(rec.to_dict())
+                    else:
+                        six.print_('==== BINARY NOT SHOWN ====')
             else:
                 while 1:
                     block = fp.read(8192)

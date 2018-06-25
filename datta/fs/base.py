@@ -404,8 +404,7 @@ class VersionedFile(io.BufferedIOBase):
         io.BufferedIOBase.__init__(self)
         self.path = self.name = filename
         manager.check_perm(self.path, owner=requestor, perm=mode)
-        self.created = None
-        self.modified = None
+        self.created = self.modified = None
         self.data = None
         self.meta = meta or {}
         self.mode = mode
@@ -459,7 +458,7 @@ class VersionedFile(io.BufferedIOBase):
                 u'length': length,
                 u'hash': self.hash,
                 u'created': self.created,
-                u'modified': datetime.datetime.utcnow(),
+                u'modified': self.modified,
             }
             content_type = getattr(self, 'content_type', None)
             if not content_type:
@@ -565,6 +564,8 @@ class VersionedFile(io.BufferedIOBase):
 
     def update(self, kwargs):
         for k, v in kwargs.items():
+            if k == 'modified' and self.mode == 'w':
+                continue
             setattr(self, k, v)
 
     def set_encryption(self, password='', save_password=False):

@@ -31,7 +31,7 @@ def _serve_default(request, title, content=None, mime=None):
     """Some pages have their default content."""
 
     if title in current_app.storage:
-        return download(request, title)
+        return download(title)
     if content is None:
         content = pkgutil.get_data('datta.wiki', os.path.join('static', title))
     mime = mime or 'application/octet-stream'

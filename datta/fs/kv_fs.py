@@ -283,8 +283,10 @@ class BaseKVFSManager(BaseManager):
             if include_history:
                 for i in tr[start:end]:
                     path = u'/' + u'/'.join(self._files.unpack(i.key)[0])
+                    del tr[i.key]
                     del tr[self.make_history_key(path).range()]
-            del tr[start:end]
+            else:
+                del tr[start:end]
 
     def rename(self, frompath, topath, owner=u'*', record_move=True):
         frompath = os.path.normpath(frompath)
@@ -401,7 +403,7 @@ class BaseKVFSManager(BaseManager):
     def create_repository(self, directory):
         directory = six.text_type(directory)
         config = self.get_path_config(directory)
-        if not config.get('is_repo'):
+        if not config.get(u'is_repo'):
             config.is_repo = {}
             key = self._repos[directory]
             with self._begin(write=True) as tr:
@@ -409,13 +411,13 @@ class BaseKVFSManager(BaseManager):
                 if not val:
                     tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
             keyrange = slice(key.key(), self._repos[directory][9223372036854775807].key())
-            config.is_repo['key'] = key.key()
-            config.is_repo['range'] = (keyrange.start, keyrange.stop)
+            config.is_repo[u'key'] = key.key()
+            config.is_repo[u'range'] = (keyrange.start, keyrange.stop)
             self.set_path_config(directory, config)
         else:
-            repo = config.get('is_repo')
-            key = self._repos.__class__(rawPrefix=repo['key'])
-            keyrange = slice(repo['range'][0], repo['range'][1])
+            repo = config.get(u'is_repo')
+            key = self._repos.__class__(rawPrefix=repo[u'key'])
+            keyrange = slice(repo[u'range'][0], repo[u'range'][1])
         self._active_repos[directory] = {'key': key, 'range': keyrange}
 
     def repo_rev(self, repository):
@@ -451,6 +453,7 @@ class BaseKVFSManager(BaseManager):
                 try:
                     rev = key.unpack(k)[0]
                 except ValueError:
+                    print('could not unpack', k, v)
                     break
                 rec = HistoryInfo.from_bytes(v)
                 rec.rev = rev

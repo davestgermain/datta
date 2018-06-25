@@ -74,10 +74,13 @@ class TransactionalEnvironment(object):
                     continue
                 if comparator(key, end):
                     break                
-                if do_clear:
+                if not do_clear:
+                    yield KeyValue(key, value)
+                else:
                     if not cursor.delete():
-                        break
-                yield KeyValue(key, value)
+                        print('could not delete', key)
+                    else:
+                        yield key
                 count += 1
                 if limit and count == limit:
                     break
@@ -120,6 +123,7 @@ class TransactionalEnvironment(object):
             # do range clear
             for i in self.get_range(key.start, key.stop, values=False, do_clear=True):
                 pass
+                # print(i)
                 # self.txn.delete(i.key)
 
     def __setitem__(self, key, value):

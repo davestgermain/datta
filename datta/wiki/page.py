@@ -573,7 +573,7 @@ class WikiPageFile(WikiPage):
         if self.title not in self.storage:
             raise error.NotFoundErr()
         content = ['<p>Download <a href="%s">%s</a> as <i>%s</i>.</p>' %
-                   (self.request.get_download_url(self.title),
+                   (self.get_download_url(self.title),
                     werkzeug.escape(self.title), self.mime)]
         return content
 

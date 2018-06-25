@@ -1,7 +1,5 @@
-from . import dbstorage, dbsearch
+from . import dbstorage
 import hatta.storage
-import wikicache
-import hatta
 import sys
 import time
 import datetime
@@ -10,8 +8,10 @@ import six
 
 
 mstore = hatta.storage.WikiStorage(sys.argv[1])
-# dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='cockroachdb://root@localhost:26257/wiki?sslcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.crt&sslkey=%2FUsers%2Fdcs%2F.cockroach-certs%2Fclient.root.key&sslmode=verify-full&sslrootcert=%2FUsers%2Fdcs%2F.cockroach-certs%2Fca.crt')
-dbstore = dbstorage.WikiStorage('false-dilemma', repo_path='lmdb:///Users/dcs/lmdbfs/')
+dsn = 'lmdb:///Users/dcs/lmdbfs/'
+dsn = 'lmdb:///tmp/wiki/'
+dbstore = dbstorage.WikiStorage(dsn)
+dbstore.set_wiki('om.paragate.club')
 
 history = list(mstore.history())
 history.reverse()
@@ -30,9 +30,9 @@ for title, rev, dt, author, comment in history:
         dbstore.save_data(title, content, author=author, comment=comment, ts=ts)
     six.print_(title, rev)
 
-wiki = wikicache.CachedWiki(hatta.WikiConfig())
-wiki.storage = dbstore
-wiki.index = dbsearch.WikiDBSearch('/tmp/wiki/false-dilemma/', 'en', dbstore)
-wiki.index.update(wiki)
+# wiki = wikicache.CachedWiki(hatta.WikiConfig())
+# wiki.storage = dbstore
+# wiki.index = dbsearch.WikiDBSearch('/tmp/wiki/false-dilemma/', 'en', dbstore)
+# wiki.index.update(wiki)
 
 

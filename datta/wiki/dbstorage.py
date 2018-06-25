@@ -65,7 +65,7 @@ class WikiStorage(object):
 
     def _path(self, path=''):
         path = os.path.normpath(path)
-        return os.path.normpath(os.path.join('/wiki', self._wiki, path))
+        return os.path.normpath(os.path.join('/wiki-{}'.format(self._wiki), path))
 
     def __contains__(self, title):
         if title:
@@ -101,7 +101,7 @@ class WikiStorage(object):
             if parent_rev:
                 fp.meta[u'parent'] = parent_rev
             if ts:
-                fp.created = ts
+                fp.modified = ts
             fp.write(data)
 
     def delete_page(self, title, author, comment, ts=None):

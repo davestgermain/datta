@@ -4,7 +4,7 @@
 import os
 import sys
 
-from datta.wiki import Wiki
+from datta.wiki.wiki import Wiki
 
 
 
