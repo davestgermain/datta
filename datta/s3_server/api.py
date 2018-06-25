@@ -58,7 +58,7 @@ class BucketView(HTTPMethodView):
         end_key = request.args.get('end')
         marker = request.args.get('marker')
         # print(request.args)
-        s3iter = aws.list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, marker=marker, versions='versions' in request.query_string)
+        s3iter = aws.list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, owner=request['username'], marker=marker, versions='versions' in request.query_string)
         async def iterator(resp):
             try:
                 for chunk in s3iter:
