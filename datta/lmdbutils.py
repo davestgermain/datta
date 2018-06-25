@@ -30,14 +30,14 @@ class TransactionalEnvironment(object):
         self.enter_count += 1
         return self
 
-    def __exit__(self, type, exc, tb):
+    def __exit__(self, exc_type, exc, tb):
         if not exc:
             self.enter_count -= 1
             if self.enter_count == 0:
                 self.txn.commit()
         else:
             self.txn.abort()
-            six.reraise(type, exc, tb)
+            six.reraise(exc_type, exc, tb)
 
     def create_transaction(self, write=False, buffers=False):
         txn = self.env.begin(write=write, buffers=buffers)
@@ -81,6 +81,16 @@ class TransactionalEnvironment(object):
                 count += 1
                 if limit and count == limit:
                     break
+
+    def shuffle_keys(self, start, stop, limit=1):
+        """
+        randomly sort the range, returning a list of ``limit`` size
+        """
+        import random
+        result = list(self.get_range(start, stop, values=False))
+        size = len(result)
+        random.shuffle(result)
+        return result[:limit]
 
     def commit(self):
         self.txn.commit()

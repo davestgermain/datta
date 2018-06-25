@@ -96,6 +96,12 @@ class Record(object):
                     return False
             return True
 
+    def __bool__(self):
+        for item in self:
+            if item:
+                return True
+        return False
+
     def __iter__(self):
         return iter(self.to_tuple())
 
@@ -134,7 +140,10 @@ class Record(object):
         return [(k, getattr(self, k, None)) for k in self.fieldnames]
 
     def to_dict(self):
-        return {k: getattr(self, k, None) for k in self.fieldnames}
+        if '__dict__' in self.__slots__:
+            return self.__dict__.copy()
+        else:
+            return {k: getattr(self, k, None) for k in self.fieldnames}
 
     def to_tuple(self):
         return tuple((getattr(self, n, None) for n in self.__slots__))
