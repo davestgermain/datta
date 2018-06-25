@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+
+{% block page_title %}<h1>{{ title }}</h1>{% endblock %}
+{% block title %}{{ title }} - {{ wiki.site_name }}{% endblock %}
+
+{% block footer %}
+    {% if edit_url %}
+        <a href="{{ edit_url }}"
+           class="edit">{{ _('Edit') }}</a>
+    {% endif %}
+    <a href="{{ url(title, 'history') }}"
+       class="hatta-history">{{ _('History') }}</a>
+    <a href="{{ url(title, 'backlinks') }}"
+       class="hatta-backlinks">{{ _('Backlinks') }}</a>
+{% endblock %}

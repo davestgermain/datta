@@ -1,0 +1,77 @@
+{% extends 'layout.html' %}
+
+{% block title %}
+    {{ special_tile or title }} - {{ wiki.site_name }}
+{% endblock %}
+
+{% block links %}
+    <link rel="stylesheet" type="text/css"
+          href="{{ url(None, 'style_css') }}">
+    <link rel="stylesheet" type="text/css"
+          href="{{ url(None, 'pygments_css') }}">
+    <link rel="shortcut icon" type="image/x-icon"
+          href="{{ url(None, 'favicon_ico') }}">
+    <link rel="alternate" type="application/rss+xml"
+          title="{{ wiki.site_name }} (ATOM)"
+          href="{{ url(None, 'atom') }}">
+    {% if edit_url %}
+        <link rel="alternate" type="application/wiki"
+              href="{{ edit_url }}">
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script type="text/javascript"
+            src="{{ url(None, 'scripts_js') }}"></script>
+    {% if wiki.math_url == 'mathjax' %}
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+            tex2jax: {
+                inlineMath: [['$','$']],
+                displayMath: [['$$','$$']],
+                ignoreClass: ".*",
+                processClass: "^(display|inline)-math$",
+                processEscapes: true
+            },
+            showMathMenu: false,
+            showMathMenuMSIE: false
+        });
+    </script>
+    <script type="text/javascript"
+        src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
+    ></script>
+    {% endif %}
+{% endblock %}
+
+{% block logo %}
+    {% if wiki.logo_page in wiki.storage %}
+        <a id="hatta-logo"
+           href="{{ url(wiki.front_page) }}"><img
+             src="{{ download_url(wiki.logo_page) }}"
+             alt="[{{ wiki.logo_page }}]"
+        ></a>
+    {% endif %}
+{% endblock %}
+
+{% block search %}
+    <form action="{{ url(None, 'search') }}" id="hatta-search" method="GET"
+      ><div><input
+        id="hatta-search-q" name="q"><input
+        class="button" type="submit" value="{{ _("Search") }}"
+    ></div></form>
+{% endblock %}
+
+{% block menu %}
+    <div id="hatta-menu">
+    {% for part in page.menu() %}
+        {{ part|safe }}
+    {% endfor %}
+    </div>
+{% endblock %}
+
+{% block page_title %}
+    <h1>{{ special_title or title }}</h1>
+{% endblock %}
+
+{% block content %}{% for part in content %}{{ part|safe }}{% endfor %}{% endblock %}
+

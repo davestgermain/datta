@@ -1,16 +1,39 @@
-# from hatta.search import WikiSearch
-import hatta
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+import re
 import os.path, os
 import time
 from collections import defaultdict
 import six
 from datta.search import IndexManager, query
 
+from datta.wiki import error, page
 
 
+class WikiSearch(object):
+    """
+    Responsible for indexing words and links, for fast searching and
+    backlinks. Uses a cache directory to store the index files.
+    """
 
-class WikiDBSearch(hatta.search.WikiSearch):
-    INDEX_THREAD = None
+    word_pattern = re.compile(r"""\w[-~&\w]+\w""", re.UNICODE)
+    jword_pattern = re.compile(
+r"""[ｦ-ﾟ]+|[ぁ-ん～ー]+|[ァ-ヶ～ー]+|[0-9A-Za-z]+|"""
+r"""[０-９Ａ-Ｚａ-ｚΑ-Ωα-ωА-я]+|"""
+r"""[^- !"#$%&'()*+,./:;<=>?@\[\\\]^_`{|}"""
+r"""‾｡｢｣､･　、。，．・：；？！゛゜´｀¨"""
+r"""＾￣＿／〜‖｜…‥‘’“”"""
+r"""（）〔〕［］｛｝〈〉《》「」『』【】＋−±×÷"""
+r"""＝≠＜＞≦≧∞∴♂♀°′″℃￥＄¢£"""
+r"""％＃＆＊＠§☆★○●◎◇◆□■△▲▽▼※〒"""
+r"""→←↑↓〓∈∋⊆⊇⊂⊃∪∩∧∨¬⇒⇔∠∃∠⊥"""
+r"""⌒∂∇≡≒≪≫√∽∝∵∫∬Å‰♯♭♪†‡¶◾"""
+r"""─│┌┐┘└├┬┤┴┼"""
+r"""━┃┏┓┛┗┣┫┻╋"""
+r"""┠┯┨┷┿┝┰┥┸╂"""
+r"""ｦ-ﾟぁ-ん～ーァ-ヶ"""
+r"""0-9A-Za-z０-９Ａ-Ｚａ-ｚΑ-Ωα-ωА-я]+""", re.UNICODE)
 
     def __init__(self, cache_path, lang, storage):
         self.fs = storage.fs
@@ -19,8 +42,8 @@ class WikiDBSearch(hatta.search.WikiSearch):
         if lang == "ja":
             self.split_text = self.split_japanese_text
         self.index = IndexManager(self.fs)
-        self.name = storage._wiki
-        
+
+    def initialize_index(self):
         if not self.index.index_exists(self.name):
             schema = {
                 'links': {
@@ -43,7 +66,31 @@ class WikiDBSearch(hatta.search.WikiSearch):
                 },
             }
             self.index.create_index(self.name, schema)
-        # self._thread = None
+
+    @property
+    def name(self):
+        return self.storage._wiki
+
+    def split_text(self, text):
+        """Splits text into words"""
+
+        for match in self.word_pattern.finditer(text):
+            word = match.group(0)
+            yield word.lower()
+
+    def split_japanese_text(self, text):
+        """Splits text into words, including rules for Japanese"""
+
+        for match in self.word_pattern.finditer(text):
+            word = match.group(0)
+            got_japanese = False
+            for m in self.jword_pattern.finditer(word):
+                w = m.group(0)
+                got_japanese = True
+                yield w.lower()
+            if not got_japanese:
+                yield word.lower()
+
 
     def get_last_revision(self):
         """Retrieve the last indexed repository revision."""
@@ -51,7 +98,7 @@ class WikiDBSearch(hatta.search.WikiSearch):
 
     def set_last_revision(self, rev):
         """Store the last indexed repository revision."""
-        return self.index.get_index_revision(self.name, rev)
+        return self.index.set_index_revision(self.name, rev)
 
     def find(self, words):
         """Iterator of all pages containing the words, and their scores."""
@@ -62,6 +109,7 @@ class WikiDBSearch(hatta.search.WikiSearch):
 
     def update(self, wiki):
         """Reindex al pages that changed since last indexing."""
+        self.initialize_index()
         last_rev = self.get_last_revision()
         if last_rev == -1:
             changed = self.storage.all_pages()
@@ -80,17 +128,17 @@ class WikiDBSearch(hatta.search.WikiSearch):
 
     def reindex(self, wiki, pages):
         with self.index.index_writer(self.name) as writer:
-            self.index.index_searcher(self.name) as searcher:
+            with self.index.index_searcher(self.name) as searcher:
                 for title in pages:
-                    writer.delete_by_term('title', title, searcher=s)
+                    writer.delete_by_term('title', title, searcher=searcher)
             for title in pages:
-                page = hatta.page.get_page(None, title, wiki)
-                self.reindex_page(page, title, writer)
+                p = page.get_page(None, title, wiki)
+                self.reindex_page(p, title, writer)
                 # print 'INDEXED', title
         self.empty = False
         rev = self.storage.repo_revision()
         self.set_last_revision(rev)
-        self.INDEX_THREAD = None
+        # self.INDEX_THREAD = None
 
     def reindex_page(self, page, title, writer, text=None):
         """Updates the content of the database, needs locks around."""
@@ -99,7 +147,7 @@ class WikiDBSearch(hatta.search.WikiSearch):
             get_text = getattr(page, 'plain_text', lambda: u'')
             try:
                 text = get_text()
-            except hatta.error.NotFoundErr:
+            except error.NotFoundErr:
                 text = None
 
         extract_links = getattr(page, 'extract_links', None)
@@ -114,7 +162,7 @@ class WikiDBSearch(hatta.search.WikiSearch):
                     wanted.append(qlink)
         else:
             links = []
-        doc = {'title': unicode(title)}
+        doc = {'title': str(title)}
         if links:
             doc['links'] = u' '.join(links)
             doc['has_links'] = True
@@ -130,7 +178,7 @@ class WikiDBSearch(hatta.search.WikiSearch):
         """Updates the index with new page content, for a single page."""
 
         if text is None and data is not None:
-            text = unicode(data, self.storage.charset, 'replace')
+            text = str(data, self.storage.charset, 'replace')
         self.set_last_revision(self.storage.repo_revision())
         with self.index.index_writer(self.name) as writer:
             with self.index.index_searcher(self.name) as s:
