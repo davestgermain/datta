@@ -82,7 +82,7 @@ class BaseKVFSManager(BaseManager):
         else:
             paths = [path]
         history = []
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             for path in paths:
                 hk = self.make_history_key(path)
                 start = hk[None]
@@ -100,7 +100,7 @@ class BaseKVFSManager(BaseManager):
 
     def get_file_metadata(self, path, rev, tr=None):
         if tr is None:
-            tr = self._begin()
+            tr = self._begin(buffers=True)
         with tr:
             active = tr[self._make_file_key(path)]
             exists = active != None
@@ -254,7 +254,7 @@ class BaseKVFSManager(BaseManager):
                 nd += delimiter
 
             dirname = nd
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             start = self._make_file_key(dirname).key()[:-1]
             end = start + b'\xff'
 
@@ -431,7 +431,7 @@ class BaseKVFSManager(BaseManager):
         except KeyError:
             raise Exception(repository)
         else:
-            with self._begin() as tr:
+            with self._begin(buffers=True) as tr:
                 return self._repo_rev(tr, found)
     
     def _repo_rev(self, tr, found):
@@ -449,7 +449,7 @@ class BaseKVFSManager(BaseManager):
         key = self._repos[repository]
         start = self._repos[repository][since + 1]
         end = self._repos[repository][9223372036854775807]
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             for k, v in tr.get_range(start, end, reverse=True):
                 try:
                     rev = key.unpack(k)[0]
@@ -471,7 +471,7 @@ class BaseKVFSManager(BaseManager):
         """
         gets the stored data
         """
-        with self._begin() as tr:
+        with self._begin(buffers=True) as tr:
             val = tr[self._kv[path]]
 
         if val != None:
@@ -511,7 +511,7 @@ class BaseKVFSManager(BaseManager):
         return pref.items()
 
     def get_acl(self, path, tr=None):
-        tr = tr or self._begin()
+        tr = tr or self._begin(buffers=True)
         ppath = self._perm_path(path)
         basekey = self._perms
         acl = None

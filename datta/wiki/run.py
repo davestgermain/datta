@@ -26,12 +26,6 @@ Wiki.storage_class = dbstorage.WikiStorage
 Wiki.index_class = dbsearch.WikiDBSearch
 wikiapp = Wiki(config).application
 
-# wiki = MultiWiki(config)
-# wiki.add_domain(['localhost', 'om.paragate.club'], 'false dilemma')
-# wikiapp = wiki.application
-# wikicache.CachedWiki.storage_class = dbstorage.WikiStorage
-# wikicache.CachedWiki.index_class = dbsearch.WikiDBSearch
-# wikiapp = wikicache.CachedWiki(config).application
 
     
 if __name__ == '__main__':

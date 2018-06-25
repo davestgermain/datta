@@ -116,7 +116,7 @@ r"""0-9A-Za-z０-９Ａ-Ｚａ-ｚΑ-Ωα-ωА-я]+""", re.UNICODE)
         else:
             changed = self.storage.changed_since(last_rev)
         changed = list(changed)
-        six.print_('changed', changed, last_rev)
+        # six.print_('changed', changed, last_rev)
         if changed:
             self.reindex(wiki, changed)
             # if self.INDEX_THREAD and self.INDEX_THREAD.is_alive:
