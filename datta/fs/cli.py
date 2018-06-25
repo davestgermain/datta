@@ -74,6 +74,7 @@ def main():
             p.created = p.created.strftime(timeformat)
             p.modified = p.modified.strftime(timeformat)
             p.content_type = six.text_type(p.get('content_type', ''))
+            # print(p.to_dict())
             row = templ.format(**p.to_dict())
             six.print_(row)
     elif args.command == 'cat':

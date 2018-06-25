@@ -22,4 +22,5 @@ class FSManager(BaseKVFSManager):
         return self.db.create_transaction(write=write, **kwargs)
 
     def _get_chunksize(self, meta):
-        return 1080
+        # return 1080
+        return 4096

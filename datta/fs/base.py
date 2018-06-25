@@ -417,7 +417,7 @@ class VersionedFile(io.BufferedIOBase):
         val = manager.get_file_metadata(filename, rev)
         if val:
             self.update(val)
-        
+
         if mode == Perm.read and 'id' not in kwargs:
             if not val:
                 raise FileNotFoundError(self.path)
@@ -467,7 +467,7 @@ class VersionedFile(io.BufferedIOBase):
                 content_type = mimetypes.guess_type(self.path)[0]
             hist_data[u'content_type'] = content_type
 
-            if getattr(self, 'force_rev', None):
+            if getattr(self, 'force_rev', None) is not None:
                 hist_data[u'rev'] = rev = self.force_rev
 
             self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)

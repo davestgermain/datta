@@ -123,10 +123,11 @@ class BaseKVFSManager(BaseManager):
             if not val:
                 # files in the repo have different revs
                 if self._is_in_repo(tr, path):
-                    lastkey = tr.get_key(fdb.KeySelector.last_less_or_equal(start_key))
-                    if key.contains(lastkey):
-                        rev = key.unpack(lastkey)[0]
-                        val = tr[key[rev]]
+                    for lastkey, val in tr.get_range(key[0], start_key, reverse=True, values=False):
+                        if key.contains(lastkey):
+                            rev = key.unpack(lastkey)[0]
+                            val = tr[key[rev]]
+                            break
         combined = ListInfo()
         if val:
             hist = HistoryInfo.from_bytes(bytes(val))
@@ -409,15 +410,13 @@ class BaseKVFSManager(BaseManager):
                 val = tr[key[None]]
                 if not val:
                     tr[key[None]] = Record(latest=0, rev=-1).to_bytes()
-            keyrange = slice(key.key(), self._repos[directory, None].key())
-            # keyrange = key.range()
+            keyrange = slice(key.key(), self._repos[directory][9223372036854775807].key())
             config.is_repo['key'] = key.key()
             config.is_repo['range'] = (keyrange.start, keyrange.stop)
             self.set_path_config(directory, config)
         else:
             repo = config.get('is_repo')
             key = self._repos.__class__(rawPrefix=repo['key'])
-            # keyrange = key.range()
             keyrange = slice(repo['range'][0], repo['range'][1])
         self._active_repos[directory] = {'key': key, 'range': keyrange}
 
@@ -448,10 +447,13 @@ class BaseKVFSManager(BaseManager):
         repository = six.text_type(repository)
         key = self._repos[repository]
         start = self._repos[repository][since + 1]
-        end = self._repos[repository, None]
+        end = self._repos[repository][9223372036854775807]
         with self._begin() as tr:
             for k, v in tr.get_range(start, end, reverse=True):
-                rev = key.unpack(k)[0]
+                try:
+                    rev = key.unpack(k)[0]
+                except ValueError:
+                    break
                 rec = HistoryInfo.from_bytes(v)
                 rec.rev = rev
                 yield rec
