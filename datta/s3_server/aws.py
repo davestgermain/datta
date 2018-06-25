@@ -59,7 +59,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, del
             rows = [row]
         for row in rows:
             if row.get('content_type') == 'application/x-directory':
-                subdirs.add(row.path.split('/')[-1])
+                # subdirs.add(row.path.split('/')[-1])
                 continue
             modified = row.get('modified', row.created).isoformat() + 'Z'
             created = row.get('created').isoformat() + 'Z'
