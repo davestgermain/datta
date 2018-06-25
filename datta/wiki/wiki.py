@@ -138,6 +138,7 @@ class Wiki(flask.Flask):
 
         self.config.from_storage(self.storage)
         self.cache = DBCacheManager(self)
+        self.cache.initialize()
 
         
         self.index = self.index_class(self.cache, self.language, self.storage)
@@ -149,8 +150,7 @@ class Wiki(flask.Flask):
         self._last_host = None
 
     def _startup(self):
-        self.storage.set_wiki()
-        self.cache.initialize()
+        # self.storage.set_wiki()
         # self.index.update(self)
         self._url_adapter = self.create_url_adapter(flask.request)
 
@@ -158,7 +158,7 @@ class Wiki(flask.Flask):
         host = flask.request.host
         if host != self._last_host:
             self.config.switch_config(host)
-            self.storage.set_wiki(host)
+            self.storage.set_wiki(self.config.get('PAGE_PATH', host))
             self.index.update(self)
             self._last_host = host
 

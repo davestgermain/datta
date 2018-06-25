@@ -25,7 +25,7 @@ class DBCacheManager(object):
         self.wiki.after_request(cache_response_middleware)
         
         self.fs = self.wiki.storage.fs
-        self._prefix = os.path.join('/.cache/wiki')
+        self._prefix = '/.cache/wiki'
         config = self.fs.get_path_config(self._prefix)
         if config.get('versioning') is None:
             config.versioning = False

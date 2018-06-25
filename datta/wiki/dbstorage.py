@@ -65,7 +65,7 @@ class WikiStorage(object):
 
     def _path(self, path=''):
         path = os.path.normpath(path)
-        return os.path.normpath(os.path.join('/', self._wiki, path))
+        return os.path.normpath(os.path.join('/wiki', self._wiki, path))
 
     def __contains__(self, title):
         if title:

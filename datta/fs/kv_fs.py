@@ -139,7 +139,8 @@ class BaseKVFSManager(BaseManager):
 
     def save_file_data(self, path, meta, buf, cipher=None):
         rev = meta.get(u'rev', None)
-        meta[u'created'] = created = meta[u'created']
+        created = meta[u'created'] or now()
+        meta[u'created'] = modified = (meta[u'modified'] or now())
         meta[u'path'] = path
         hist_key = self.make_history_key(path)
         hash_algo = meta.pop(u'hash', None)
@@ -150,11 +151,8 @@ class BaseKVFSManager(BaseManager):
         meta[u'bs'] = self._get_chunksize(meta)
 
         with self._begin(write=True) as tr:
-            if rev is not None:
-                modified = meta[u'created']
-            else:
+            if rev is None:
                 meta[u'rev'] = rev = self._get_next_rev(tr, path)
-                modified = now()
 
             hist = HistoryInfo(**meta)
             written = 0
@@ -165,7 +163,6 @@ class BaseKVFSManager(BaseManager):
                 if cipher:
                     data = cipher['encrypt'](data)
                 hist.data = data
-                # six.print_(repr(hist))
             else:
                 # now write the chunks
                 cn = 0
@@ -247,7 +244,7 @@ class BaseKVFSManager(BaseManager):
         with self._begin() as tr:
             return bool(tr[key])
 
-    def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, order=None, where=None, cols=None, delimiter='/'):
+    def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, delimiter='/', rev=None, **kwargs):
         if delimiter:
             nd = os.path.normpath(dirname)
             if dirname.endswith(delimiter) and not nd.endswith(delimiter):
@@ -267,7 +264,7 @@ class BaseKVFSManager(BaseManager):
                     continue
                 meta = ListInfo()
                 meta.update(FileInfo.from_bytes(v))
-                meta.update(self.get_file_metadata(path, rev=meta.rev, tr=tr))
+                meta.update(self.get_file_metadata(path, rev=rev or meta.rev, tr=tr))
                 if open_files:
                     yield VersionedFile(self, path, mode=Perm.read, requestor=owner, **meta.to_dict())
                 else:
@@ -466,6 +463,14 @@ class BaseKVFSManager(BaseManager):
             if path not in seen:
                 yield path
                 seen.add(path)
+
+    def repo_checkout(self, repository, rev=None, owner='*'):
+        """
+        return iterator of open files for every path in the repository,
+        for the given version
+        """
+        for fp in self.listdir(repository, walk=True, open_files=True, rev=rev):
+            yield fp
 
     def __getitem__(self, path):
         """

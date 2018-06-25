@@ -23,4 +23,4 @@ class FSManager(BaseKVFSManager):
 
     def _get_chunksize(self, meta):
         # return 1080
-        return 4096
+        return 524288
