@@ -518,7 +518,7 @@ class BaseKVFSManager(BaseManager):
                 k = self._files.unpack(k)[0]
                 path = u'/' + u'/'.join(k)
                 path = path.replace(prefix, '', 1)
-                if path.count(delimiter) > 0:
+                if path != prefix and path.count(delimiter) == 1:
                     pref[path.split(delimiter)[0]] += 1
         return pref.items()
 
