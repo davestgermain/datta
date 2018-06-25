@@ -195,6 +195,7 @@ class BaseKVFSManager(BaseManager):
 
             # set the active key
             tr[self._make_file_key(path)] = FileInfo(created=created, modified=modified, rev=rev)
+        return {'rev': rev}
 
     def get_file_chunks(self, path, rev, cipher=None):
         key = self.make_history_key(path)

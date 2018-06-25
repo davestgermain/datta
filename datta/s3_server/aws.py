@@ -37,6 +37,8 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
     contents = []
     last_key = None
     subdirs = set()
+    key_count = 0
+    last_marker = ''
     for row in iterator:
         key = row.path.replace(bucket_prefix, '', 1)
         if key == bucket_prefix[:-1]:
@@ -48,6 +50,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
         #         continue
         # if marker and key <= marker:
         #     continue
+        last_marker = key
         if versions:
             rows = fs.get_meta_history(row.path)
             latest_rev = row.rev
@@ -86,13 +89,14 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
                 contents.append('</Version>')
             else:
                 contents.append('</Contents>')
+            key_count += 1
         
         last_key = key
-        if len(contents) == maxkeys:
+        if key_count == maxkeys:
             is_truncated = 'true'
             break
 
-    return contents, last_key, is_truncated, subdirs
+    return contents, key_count, last_key, is_truncated, subdirs, last_marker
 
 def list_available_buckets(fs, username):
     pass
@@ -142,6 +146,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     Returns XML for S3 list_bucket API
     """
     path = '/'.join(['', bucket, prefix])
+
     # if not prefix:
     #     path += '/'
 
@@ -156,12 +161,12 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
         <Prefix>%s</Prefix>
         <MaxKeys>%s</MaxKeys>
         <Delimiter>%s</Delimiter>
-''' % (element, bucket, prefix, maxkeys, delimiter)
+        <Marker>%s</Marker>
+''' % (element, bucket, prefix, maxkeys, delimiter, marker or '')
 
 
     bucket_prefix = '/%s/' % bucket
-    contents, last_key, is_truncated, subdirs = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
-    count = len(contents)
+    contents, count, last_key, is_truncated, subdirs, last_marker = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
     yield preamble
     yield from contents
     if last_key:
@@ -169,7 +174,9 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     yield '<KeyCount>%d</KeyCount><IsTruncated>%s</IsTruncated>' % (count, is_truncated)
 
     if delimiter:
-        prefixes = set([d[0] for d in fs.common_prefixes(path, delimiter)]) | subdirs
+        prefixes = set(d[0] for d in fs.common_prefixes(path, delimiter)) | subdirs
+        if count == 0 and not path.endswith('/'):
+            prefixes.add(path)
         if prefixes:
             next_token = None
             for cp in sorted(prefixes):
@@ -178,7 +185,9 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
                 cp = cp.replace(bucket_prefix, '', 1)
                 if cp:
                     yield '<CommonPrefixes><Prefix>%s%s</Prefix></CommonPrefixes>' % (cp, delimiter)
+                    last_marker = cp
             yield '<NextContinuationToken>%s</NextContinuationToken>' % next_token
+    yield '<NextMarker>%s</NextMarker>' % last_marker
     yield '</%s>' % element
 
 def list_partials(fs, bucket):

@@ -10,8 +10,6 @@ async def register(request):
     auth_user = request['user']
     if auth_user and auth_user.get('role') == 'admin':
         username = request.form.get('username', '')
-        if username:
-            username = username[0]
     user, password = auth.register(request.app.fs, user=username)
     return response.json({'name': user['username'], 'password': password, 'secret_key': user['secret_key']})
 

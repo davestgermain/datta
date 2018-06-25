@@ -34,7 +34,7 @@ class BucketView(HTTPMethodView):
         
         config = fs.get_path_config('/' + bucket)
         if qs in ('location=', 'location'):
-            return xml_response('<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
+            return xml_response('<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
         elif qs == 'policy=':
             return response.json(auth.get_acl(shelf, bucket))
         elif 'uploads' in qs:
@@ -78,6 +78,7 @@ class BucketView(HTTPMethodView):
 
     async def put(self, request, bucket):
         user = request['username']
+
         headers = {}
         if user:
             path = '/' + bucket
@@ -233,6 +234,8 @@ class ObjectView(HTTPMethodView):
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
         headers = {'Etag': fp.meta['md5']}
+        if fp.rev is not None:
+            headers['x-amz-version-id'] = str(fp.rev)
         if copy:
             headers['Content-Type'] = 'text/xml'
             resp = '''

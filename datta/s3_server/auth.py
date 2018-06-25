@@ -45,13 +45,13 @@ def check_password(user_obj, password):
     encoded, salt, iterations = user_obj['password']
     return encode_password(password, salt=salt, iterations=iterations)[0] == encoded
 
-
-def change_password(shelf, user_obj, password):
-    """
-    change user object password
-    """
-    user_obj['password'] = encode_password(password)
-    shelf[AUTH_BUCKET, user_obj['username']] = user_obj
+#
+# def change_password(shelf, user_obj, password):
+#     """
+#     change user object password
+#     """
+#     user_obj['password'] = encode_password(password)
+#     shelf[AUTH_BUCKET, user_obj['username']] = user_obj
 
 def register(fs, user=None, password=None):
     """
@@ -148,6 +148,8 @@ def user_from_request(fs, request):
                 if valid:
                     # print('USER ID', user['username'])
                     return user
+                else:
+                    error_logger.debug('AUTH PROBLEM %s %s', valid, auth_header)
             elif check_password(user, auth_pass):
                 return user
     return None
@@ -201,8 +203,9 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
 def available_buckets(fs, user=None):
     for obj in fs.listdir('/'):
         if obj.content_type == 'application/x-directory':
-            if fs.check_perm(obj.path, user, raise_exception=False):
-                yield obj.path.replace('/', '')
+            bucket = obj.path.replace('/', '')
+            if not bucket.startswith('.') and fs.check_perm(obj.path, user, raise_exception=False):
+                yield bucket
     # for i, count in fs.common_prefixes('/', '/'):
     #     if not i.startswith('.'):
     #         yield i

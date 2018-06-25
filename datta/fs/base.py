@@ -469,7 +469,7 @@ class VersionedFile(io.BufferedIOBase):
                 hist_data[u'rev'] = rev = self.force_rev
                 hist_data[u'modified'] = self.created
 
-            self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher)
+            self.update(self.manager.save_file_data(self.path, hist_data, self._buf, cipher=self._cipher))
 
             self._buf.close()
             self._buf = None
@@ -563,10 +563,11 @@ class VersionedFile(io.BufferedIOBase):
         return wrote
 
     def update(self, kwargs):
-        for k, v in kwargs.items():
-            if k == 'modified' and self.mode == 'w':
-                continue
-            setattr(self, k, v)
+        if kwargs:
+            for k, v in kwargs.items():
+                if k == 'modified' and self.mode == 'w':
+                    continue
+                setattr(self, k, v)
 
     def set_encryption(self, password='', save_password=False):
         """
