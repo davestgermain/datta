@@ -32,7 +32,7 @@ async def read_request(request, write_buf):
         await write_async(write_buf, request.body)
 
 
-def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
+def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, delimiter='/'):
     is_truncated = 'false'
     contents = []
     last_key = None
@@ -51,6 +51,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
         # if marker and key <= marker:
         #     continue
         last_marker = key
+
         if versions:
             rows = fs.get_meta_history(row.path)
             latest_rev = row.rev
@@ -62,7 +63,8 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
                 continue
             modified = row.get('modified', row.created).isoformat() + 'Z'
             created = row.get('created').isoformat() + 'Z'
-            etag = row.meta.get('md5') or row.meta.get('sha256') or 'default'
+            meta = row.meta or {}
+            etag = meta.get('md5') or meta.get('sha256') or 'default'
             owner = row.get('owner', '') or ''
             if not isinstance(owner, str):
                 owner = owner.decode('utf8')
@@ -80,7 +82,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False):
     <Size>{size}</Size>
     <StorageClass>STANDARD</StorageClass>
     <Owner><DisplayName>{owner}</DisplayName></Owner>
-    '''.format(key=key, size=row.get('length', 0), created=created, modified=modified, etag=etag, owner=owner)
+    '''.format(key=key, size=row.get('length') or 0, created=created, modified=modified, etag=etag, owner=owner)
             contents.append(doc)
             if versions:
                 contents.append('<VersionID>{rev}</VersionID>'.format(rev=row.rev))
@@ -166,6 +168,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
 
 
     bucket_prefix = '/%s/' % bucket
+    # bucket_prefix += prefix
     contents, count, last_key, is_truncated, subdirs, last_marker = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
     yield preamble
     yield from contents
@@ -180,9 +183,10 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
         if prefixes:
             next_token = None
             for cp in sorted(prefixes):
+                cp = os.path.join(prefix, cp)
                 if next_token is None:
                     next_token = cp
-                cp = cp.replace(bucket_prefix, '', 1)
+                # cp = cp.replace(bucket_prefix, '', 1)
                 if cp:
                     yield '<CommonPrefixes><Prefix>%s%s</Prefix></CommonPrefixes>' % (cp, delimiter)
                     last_marker = cp

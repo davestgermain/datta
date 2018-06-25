@@ -484,8 +484,11 @@ class BaseKVFSManager(BaseManager):
             val = tr[self._kv[path]]
 
         if val != None:
-            rec = KVRecord.from_bytes(bytes(val)).value
-            return rec
+            try:
+                rec = KVRecord.from_bytes(bytes(val))
+                return rec.value
+            except AttributeError:
+                print(repr(rec))
         else:
             return None
 
