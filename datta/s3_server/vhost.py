@@ -1,9 +1,10 @@
+import os.path
 from datetime import datetime
 from urllib.parse import unquote_to_bytes
-from sanic import response, exceptions, router
-from .util import get_etag, good_response
+from sanic import response, exceptions, router, log
+from .util import good_response
 
-CONFIG_BUCKET = b'.s4-config'
+CONFIG_BUCKET = '/.config/vhost/'
 
 def register(app, hosts, save=True):
     try:
@@ -11,8 +12,10 @@ def register(app, hosts, save=True):
         app.add_route(view_vhost_page, '/', methods=['GET', 'HEAD'], strict_slashes=True, host=hosts)
         if save:
             for host in hosts:
+                path = os.path.join(CONFIG_BUCKET, host)
                 hostconfig = {'bucket': host}
-                app.shelf.put_in_bucket(CONFIG_BUCKET, b'vhost/%s' % host.encode('utf8'), hostconfig)
+                with app.fs.open(path, owner='root', mode='w') as fp:
+                    fp.write(repr(hostconfig))
     except router.RouteExists:
         return False
 
@@ -22,7 +25,8 @@ def unregister(app, host, save=True):
         app.router.remove('/', host=host)
         app.router.hosts.remove(host)
         if save:
-            app.shelf.delete_from_bucket(CONFIG_BUCKET, b'vhost/%s' % host)
+            path = os.path.join(CONFIG_BUCKET, host)
+            app.fs.delete(path, owner='root')
     except (router.RouteDoesNotExist, KeyError):
         return False
 
@@ -30,51 +34,33 @@ def get_hosts(app):
     return list(app.router.hosts)
 
 def get_config_hosts(app):
-    # TODO: implement this
-    # try:
-    #     hosts = [key.split('/')[1] for key, _ in app.fs.get_range_from_bucket(CONFIG_BUCKET, 'vhost/')]
-    # except KeyError:
-    #     hosts = []
-    # return hosts
-    return []
+    hosts = [i.path.split('/')[-1] for i in app.fs.listdir(CONFIG_BUCKET)]
+    return hosts
 
 
 def init_app(app):
     hosts = get_config_hosts(app)
     register(app, hosts, save=False)
-    print('Configured vhosts for', hosts)
+    log.logger.info('Configured vhosts for %s', hosts)
 
 
 async def view_vhost_page(request, key='index.html'):
-    shelf = request.app.shelf
-    bucket = request.host.encode('utf8')
-    key = unquote_to_bytes(key)
-
+    fs = request.app.fs
+    bucket = request.host
+    path = os.path.join('/', bucket, key)
     try:
-        value = shelf.get_from_bucket(bucket, key)
-    except KeyError:
-        if key.endswith(b'/'):
+        fp = fs.open(path)
+    except FileNotFoundError:
+        if path.endswith('/'):
             try:
-                key = key + b'index.html'
-                value = shelf.get_from_bucket(bucket, key)
-            except KeyError:
-                raise exceptions.NotFound(key.decode('utf8'))
+                path += '/index.html'
+                fp = fs.open(path)
+            except FileNotFoundError:
+                raise exceptions.NotFound(path)
         else:
-            raise exceptions.NotFound(key.decode('utf8'))
+            raise exceptions.NotFound(path)
 
     headers = {}
-    if hasattr(value, 'data'):
-        body = value.data
-        content_type = value.content_type
-
-        if hasattr(value, 'created'):
-            creation_date = datetime.utcfromtimestamp(value.created)
-    else:
-        body = response.json_dumps(value)
-        content_type = 'application/json'
-        creation_date = None
     return good_response(request,
-                         body,
-                         content_type=value.content_type,
-                         headers=headers,
-                         creation_date=creation_date)
+                         fp,
+                         headers=headers)

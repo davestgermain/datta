@@ -75,38 +75,6 @@ def register(fs, user=None, password=None):
         raise KeyError(user)
     return user_obj, password
 
-def add_bucket(fs, user, bucket, extra_acl=None):
-    # username = user['username']
-    # if bucket starts with username, add it
-    # if not, check for role
-    if not isinstance(bucket, str):
-        bucket = bucket.decode('utf8')
-    bucket_name = bucket
-    # if bucket.startswith(username + '-'):
-    #     if shelf.has_key((ACL_BUCKET, bucket)):
-    #         # bail
-    #         return
-    #     else:
-    #         bucket_name = bucket
-    # else:
-    #     # can I put it on the top level?
-    #     if user.get('role') == 'admin':
-    #         bucket_name = bucket
-    #         if shelf.has_key((ACL_BUCKET, bucket_name)):
-    #             return
-    #     else:
-    #         bucket_name = '%s-%s' % (username, bucket)
-    #         if shelf.has_key((ACL_BUCKET, bucket_name)):
-    #             return
-    # acl = {}
-    # acl.update(extra_acl or {})
-    # acl[username] = DEFAULT_ACL_OWNER
-    # set_acl(shelf, bucket_name, acl)
-    # shelf.create_bucket(bucket)
-    return bucket_name
-
-
-
 
 def get_user(fs, username):
     return fs['/.auth/%s' % username]
@@ -115,43 +83,43 @@ SIG_RE = re.compile('Signature=(.*)$')
 HEAD_RE = re.compile('SignedHeaders=(.*),')
 
 def user_from_request(fs, request):
-    headers = request.headers
-    auth_header = headers.get('Authorization', '')
-    auth_user, auth_pass = get_http_auth(auth_header)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header:
+        auth_user, auth_pass = get_http_auth(auth_header)
+        if auth_user and auth_pass:
+            headers = request.headers
+            user = get_user(fs, auth_user)
+            if user:
+                if auth_pass == AWS_PASS:
+                    # 20180517T030056Z
+                    date = datetime.strptime(headers['x-amz-date'], "%Y%m%dT%H%M%SZ")
+                    # assert (datetime.utcnow() - date).seconds <= 300
+                    try:
+                        if 'expect;' in auth_header:
+                            # nginx strips expect headers, so we have to add it
+                            headers['expect'] = '100-continue'
+                        to_sign = sorted([(h.lower(), headers[h]) for h in HEAD_RE.search(auth_header).group(1).split(';')])
+                    except (KeyError, IndexError) as e:
+                        error_logger.exception('header problem %s' % headers)
+                        return
 
-    if auth_user and auth_pass:
-        user = get_user(fs, auth_user)
-        if user:
-            if auth_pass == AWS_PASS:
-                # 20180517T030056Z
-                date = datetime.strptime(headers['x-amz-date'], "%Y%m%dT%H%M%SZ")
-                # assert (datetime.utcnow() - date).seconds <= 300
-                try:
-                    if 'expect;' in auth_header:
-                        # nginx strips expect headers, so we have to add it
-                        headers['expect'] = '100-continue'
-                    to_sign = sorted([(h.lower(), headers[h]) for h in HEAD_RE.search(auth_header).group(1).split(';')])
-                except (KeyError, IndexError) as e:
-                    error_logger.exception('header problem %s' % headers)
-                    return
+                    secret_key = user['secret_key']
+                    signature = SIG_RE.search(auth_header).group(1)
+                    valid = get_aws_signature(request.url,
+                                              request.method,
+                                              to_sign,
+                                              secret_key,
+                                              date,
+                                              sha256=headers.get('x-amz-content-sha256', ''),
+                                              recv_sig=signature)
 
-                secret_key = user['secret_key']
-                signature = SIG_RE.search(auth_header).group(1)
-                valid = get_aws_signature(request.url,
-                                          request.method,
-                                          to_sign,
-                                          secret_key,
-                                          date,
-                                          sha256=headers.get('x-amz-content-sha256', ''),
-                                          recv_sig=signature)
-
-                if valid:
-                    # print('USER ID', user['username'])
+                    if valid:
+                        # print('USER ID', user['username'])
+                        return user
+                    else:
+                        error_logger.error('AUTH PROBLEM %s %s', valid, auth_header)
+                elif check_password(user, auth_pass):
                     return user
-                else:
-                    error_logger.debug('AUTH PROBLEM %s %s', valid, auth_header)
-            elif check_password(user, auth_pass):
-                return user
     return None
 
 

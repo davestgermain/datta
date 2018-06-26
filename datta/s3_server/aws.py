@@ -18,14 +18,14 @@ async def read_request(request, write_buf):
         #         fp.write(chunk)
         
         body = request.body
-        data = b''
         while body:
             cline, body = body.split(b'\r\n', 1)
             size, sig = cline.split(b';')
             size = int(size, 16)
             if size == 0:
                 break
-            await write_async(write_buf, body[:size])
+            write_buf.write(body[:size])
+            # await write_async(write_buf, body[:size])
             # chunk ends with \r\n
             body = body[size + 2:]
     else:

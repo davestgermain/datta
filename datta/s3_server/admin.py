@@ -26,38 +26,26 @@ async def change_password(request):
         resp = 'ERROR'
     return msg_response(resp, status)
 
-@bp.route('/.sys/acl/<bucket>')
-async def change_acl(request, bucket):
-    if request['user']:
-        fs = request.app.fs
-        operation = 'w' if method == 'PUT' else 'r'
-        acl = auth.can_access_acl(fs, request['user']['username'], bucket, operation)
-        if acl:
-            if request.method == 'PUT':
-                new_acl = request.json()
-                # new_acl = json.loads(env['wsgi.input'].read())
-                auth.set_acl(fs, bucket, new_acl)
-                acl = new_acl
-                status = 201
-            else:
-                status = 200
-        return response.json(acl, status=status)
-    else:
-        raise exceptions.ServerError('Unauthorized', status=401)
+# @bp.route('/.sys/acl/<bucket>')
+# async def change_acl(request, bucket):
+#     if request['user']:
+#         fs = request.app.fs
+#         operation = 'w' if method == 'PUT' else 'r'
+#         acl = auth.can_access_acl(fs, request['user']['username'], bucket, operation)
+#         if acl:
+#             if request.method == 'PUT':
+#                 new_acl = request.json()
+#                 # new_acl = json.loads(env['wsgi.input'].read())
+#                 auth.set_acl(fs, bucket, new_acl)
+#                 acl = new_acl
+#                 status = 201
+#             else:
+#                 status = 200
+#         return response.json(acl, status=status)
+#     else:
+#         raise exceptions.ServerError('Unauthorized', status=401)
 
-@bp.post('/.sys/add_bucket')
-async def add_bucket(request):
-    bucket = request.form['bucket']
-    status = 404
-    if request['user']:
-        bucket_name = auth.add_bucket(request.app.fs, request['user'], bucket)
-        if bucket_name:
-            status = 200
-            resp = bucket_name
-    else:
-        status = 403
-        resp = 'ERROR'
-    return msg_response(resp, status)
+
 
 
 @bp.route('/.sys/vhosts', methods=['GET', 'POST'])

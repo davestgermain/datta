@@ -15,14 +15,14 @@ from . import aws, auth
 bp = Blueprint('api')
 
 
-def get_website_index(shelf, bucket, key):
-    if shelf.bucket_contains(bucket, b'website'):
-        index_key = key + b'index.html'
+def get_website_index(fs, path, user=None):
+    if fs.get_path_config(path).get('website'):
+        index_path = os.path.join(path, 'index.html')
         try:
-            return shelf.get_from_bucket(bucket, index_key)
-        except KeyError:
-            key = index_key
-    raise exceptions.NotFound(key)
+            return fs.open(index_path, owner=user or '*')
+        except FileNotFoundError:
+            path = index_path
+    raise exceptions.NotFound(path)
 
 
     
@@ -31,7 +31,7 @@ class BucketView(HTTPMethodView):
         fs = request.app.fs
         qs = request.query_string
         prefix = request.args.get('prefix', '')
-        
+
         config = fs.get_path_config('/' + bucket)
         if qs in ('location=', 'location'):
             return xml_response('<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
@@ -44,8 +44,7 @@ class BucketView(HTTPMethodView):
             return xml_response(aws.list_partials(fs, path))
         elif qs in ('versioning', 'versioning='):
             status = 'Enabled' if config.get('versioning', True) else 'Disabled'
-            vxml = '''
-            <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
+            vxml = '''<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
             '''.format(status=status)
             return xml_response(vxml)
         elif qs in ('logging', 'logging='):
@@ -53,28 +52,24 @@ class BucketView(HTTPMethodView):
         elif qs in ('acl=', 'acl'):
             return xml_response(aws.get_acl_response(fs, '/' + bucket, request['username']))
 
-        it = request.args.get('iter')
         delimiter = request.args.get('delimiter', '')
         end_key = request.args.get('end')
         marker = request.args.get('marker')
-        # print(request.args)
-        s3iter = aws.list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, owner=request['username'], marker=marker, versions='versions' in request.query_string)
-        async def iterator(resp):
-            try:
-                for chunk in s3iter:
-                    resp.write(chunk)
-            except KeyError:
-                resp.write(aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).body)
-        # else:
-        #     try:
-        #         index_value = get_website_index(shelf, bucket, b'')
-        #     except exceptions.NotFound:
-        #         index_value = None
-        #     if index_value:
-        #         return response.raw(index_value.data, index_value.content_type)
-        #     else:
-        #         return msg_response(shelf.bucket_size(bucket))
-        return xml_response(iterator=iterator)
+        s3_req = delimiter or prefix or marker or request.headers.get('authorization') or request.headers.get('x-amz-content-sha256')
+
+        if s3_req:
+            s3iter = aws.list_bucket(fs, bucket, prefix=prefix, delimiter=delimiter, owner=request['username'], marker=marker, versions='versions' in request.query_string)
+            async def iterator(resp):
+                try:
+                    for chunk in s3iter:
+                        resp.write(chunk)
+                except KeyError:
+                    resp.write(aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).body)
+            return xml_response(iterator=iterator)
+        else:
+            fp = get_website_index(fs, '/%s/' % bucket)
+            return good_response(request, fp)
+
 
     async def put(self, request, bucket):
         user = request['username']
@@ -143,22 +138,19 @@ class ObjectView(HTTPMethodView):
         if request.query_string in ('acl=', 'acl'):
             return xml_response(aws.get_acl_response(fs, path, request['username']))
         headers = {}
-        status = 200
-        # print('GETTING', path)
+
         owner = request['username']
         try:
             fp = fs.open(path, owner=owner)
         except FileNotFoundError:
-            return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
+            # if this bucket is a "website", try serving an index.html
+            if path.endswith('/'):
+                fp = get_website_index(fs, path, owner)
+            else:
+                return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
-            log.logger.debug('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
+            log.logger.error('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
-        # except KeyError:
-        #     # if this bucket is a "website", try serving an index.html
-        #     if key.endswith(b'/'):
-        #         value = get_website_index(shelf, bucket, key)
-        #     else:
-        #         return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         for key, value in fp.meta.items():
             if isinstance(value, bytes):
                 value = value.decode('utf8')
@@ -183,7 +175,7 @@ class ObjectView(HTTPMethodView):
                 break
             to_buf.write(chunk)
 
-    @stream_decorator
+    # @stream_decorator
     async def put(self, request, bucket, key):
         if 'uploadId' in request.args:
             return await self.multipart_upload(request, bucket, key)

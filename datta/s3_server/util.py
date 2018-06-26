@@ -42,7 +42,23 @@ def good_response(request, fileobj, headers=None):
     body = b''
     to_read = -1
     ranger = None
-    if brange:
+    if not brange:
+        etag = fileobj.meta.get('md5') or fileobj.meta.get('sha256') or ''
+        if etag:
+            headers['Etag'] = etag
+        if etag and request.headers.get('if-none-match') == etag:
+            status = 304
+            body = b''
+            to_read = 0
+        else:
+            if_date = request.headers.get('If-Modified-Since', '')
+            if if_date:
+                ts = datetime.strptime(if_date, "%a, %d %b %Y %H:%M:%S %Z")
+                if ts >= fileobj.modified:
+                    status = 304
+                    body = b''
+                    to_read = 0
+    else:
         fileobj.st_size = fileobj.length
         # print(brange)
         try:
@@ -65,22 +81,7 @@ def good_response(request, fileobj, headers=None):
         
             to_read = ranger.size
         status = 206
-    else:
-        etag = fileobj.meta.get('md5') or fileobj.meta.get('sha256') or ''
-        if etag:
-            headers['Etag'] = etag
-        if etag and request.headers.get('if-none-match') == etag:
-            status = 304
-            body = b''
-            to_read = 0
-        else:
-            if_date = request.headers.get('If-Modified-Since', '')
-            if if_date:
-                ts = datetime.strptime(if_date, "%a, %d %b %Y %H:%M:%S %Z")
-                if ts >= fileobj.modified:
-                    status = 304
-                    body = b''
-                    to_read = 0
+
     if request.method == 'HEAD':
         body = b''
         to_read = 0
