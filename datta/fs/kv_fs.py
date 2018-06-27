@@ -299,7 +299,7 @@ class BaseKVFSManager(BaseManager):
             val = tr[key]
             if val:
                 val = FileInfo.from_bytes(val)
-                return val.flag != OP_DELETED
+                return val.get('flag') != OP_DELETED
         return False
 
     def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, delimiter='/', rev=None, **kwargs):
