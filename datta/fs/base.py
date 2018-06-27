@@ -67,14 +67,14 @@ class BaseManager(abc.ABC):
         pass
     
     @abc.abstractmethod
-    def get_file_metadata(self, path, rev):
+    def get_file_metadata(self, path, rev, mode=None):
         """
         Return dict-like metadata for the path and rev (or None for latest rev)
         """
         pass
 
     @abc.abstractmethod
-    def get_file_chunks(self, path, rev, cipher=None):
+    def get_file_chunks(self, file_info, cipher=None):
         """
         Return iterator of file chunks
         or the specified chunk
@@ -82,7 +82,7 @@ class BaseManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_file_chunk(self, path, rev, chunk, cipher=None):
+    def get_file_chunk(self, file_info, chunk, cipher=None):
         """
         Return single chunk
         """
@@ -290,7 +290,7 @@ class BaseManager(abc.ABC):
         """
         for path in paths:
             path = os.path.normpath(path)
-            meta = self.get_file_metadata(path, None)
+            meta = self.get_file_metadata(path, None, mode=mode)
             vf = VersionedFile(self, path, requestor=owner, mode=mode, **meta)
             yield vf
 
@@ -413,12 +413,12 @@ class VersionedFile(io.BufferedIOBase):
         self.bs = 8192
         self._cipher = None
         self.manager = manager
-        val = manager.get_file_metadata(filename, rev)
-        if val:
-            self.update(val)
+        self._file_info = manager.get_file_metadata(filename, rev, mode=mode)
+        if self._file_info:
+            self.update(self._file_info)
 
         if mode == Perm.read and 'id' not in kwargs:
-            if not val:
+            if not self._file_info:
                 raise FileNotFoundError(self.path)
         elif mode == Perm.write:
             self.owner = requestor 
@@ -459,6 +459,7 @@ class VersionedFile(io.BufferedIOBase):
                 u'hash': self.hash,
                 u'created': self.created,
                 u'modified': self.modified,
+                u'file_info': self._file_info,
             }
             content_type = getattr(self, 'content_type', None)
             if not content_type:
@@ -521,7 +522,7 @@ class VersionedFile(io.BufferedIOBase):
             else:
                 # optimization for reading the whole file
                 i = 0
-                for chunk in self.manager.get_file_chunks(self.path, self.rev, cipher=self._cipher):
+                for chunk in self.manager.get_file_chunks(self._file_info, cipher=self._cipher):
                     i+= 1
                     buf.extend(chunk)
                 self._pos = len(buf)
@@ -531,12 +532,12 @@ class VersionedFile(io.BufferedIOBase):
         where, pos = divmod(self._pos, self.bs)
 
         if self._curr_chunk_num != where:
-            self._curr_chunk = self.manager.get_file_chunk(self.path, self.rev, where, cipher=self._cipher)
+            self._curr_chunk = self.manager.get_file_chunk(self._file_info, where, cipher=self._cipher)
             self._curr_chunk_num = where
         buf += self._curr_chunk[pos:]
         while len(buf) < length:
             where += 1
-            self._curr_chunk = self.manager.get_file_chunk(self.path, self.rev, where, cipher=self._cipher)
+            self._curr_chunk = self.manager.get_file_chunk(self._file_info, where, cipher=self._cipher)
             if self._curr_chunk is None:
                 self._curr_chunk_num = None
                 break

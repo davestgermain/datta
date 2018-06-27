@@ -26,7 +26,7 @@ class LMDBTests(unittest.TestCase):
         self.assertRaises(FileNotFoundError, self.man.open, '/test/missing/file', mode='r', owner='test')
 
     def test_create_file(self):
-        data = 'test 123'
+        data = 'test 123' * 15000
         fp = self.man.open('/test/create', owner='test', mode='w')
         fp.write(data)
         fp.meta['testing'] = True
@@ -39,6 +39,28 @@ class LMDBTests(unittest.TestCase):
         fp.close()
         self.assertTrue(fp.closed)
     
+    def test_delete(self):
+        fname = '/test/todel'
+        
+        ts = time.time()
+        created = self.man.open(fname, owner='test', mode='w')
+        created.write(b'x' * 4096)
+        created.meta['testing'] = ts
+        created.close()
+        self.man.delete(fname, owner='test')
+        self.assertNotIn(fname, self.man)
+        self.assertRaises(FileNotFoundError, self.man.open, fname, owner='test')
+        
+        #bring it back to life
+        created = self.man.open(fname, owner='test', mode='w')
+        created.write(b'v' * 4096)
+        created.meta['testing'] = ts
+        created.close()
+        self.assertIn(fname, self.man)
+        self.assertEquals(self.man.open(fname, owner='test').rev, 2)
+        self.man.delete(fname, owner='test', include_history=True)
+        self.assertRaises(FileNotFoundError, self.man.open, fname, owner='test')
+
     def test_rename(self):
         fname = '/test/file1'
         toname = '/test/renamed'

@@ -59,31 +59,32 @@ class TransactionalEnvironment(object):
                 comparator = operator.gt
             # print('get_range', start, end, reverse, limit)
             found = cursor.set_range(start)
-            for row in range_func(keys=True, values=values):
-                if keys and values:
-                    key, value = row
-                    key = bytes(key)
-                elif keys:
-                    key = bytes(row)
-                    value = None
-                elif values:
-                    value = row
-                    key = None
+            if found or reverse:
+                for row in range_func(keys=True, values=values):
+                    if keys and values:
+                        key, value = row
+                        key = bytes(key)
+                    elif keys:
+                        key = bytes(row)
+                        value = None
+                    elif values:
+                        value = row
+                        key = None
 
-                if reverse and key > start:
-                    continue
-                if comparator(key, end):
-                    break                
-                if not do_clear:
-                    yield KeyValue(key, value)
-                else:
-                    if not cursor.delete():
-                        print('could not delete', key)
+                    if reverse and key > start:
+                        continue
+                    if comparator(key, end):
+                        break                
+                    if not do_clear:
+                        yield KeyValue(key, value)
                     else:
-                        yield key
-                count += 1
-                if limit and count == limit:
-                    break
+                        if not cursor.delete():
+                            print('could not delete', key)
+                        else:
+                            yield key
+                    count += 1
+                    if limit and count == limit:
+                        break
 
     def shuffle_keys(self, start, stop, limit=1):
         """
@@ -121,10 +122,8 @@ class TransactionalEnvironment(object):
             self.txn.delete(key)
         else:
             # do range clear
-            for i in self.get_range(key.start, key.stop, values=False, do_clear=True):
-                pass
-                # print(i)
-                # self.txn.delete(i.key)
+            for i in self.get_range(key.start, key.stop, values=False):
+                self.txn.delete(i.key)
 
     def __setitem__(self, key, value):
         if hasattr(key, 'key'):

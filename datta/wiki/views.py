@@ -50,6 +50,7 @@ def _serve_default(request, title, content=None, mime=None):
 def revision(title, rev):
     _ = current_app.gettext
     text = current_app.storage.revision_text(title, rev)
+
     link = werkzeug.html.a(werkzeug.html(title),
                            href=current_app.get_url(title))
     content = [

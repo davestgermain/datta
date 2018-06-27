@@ -4,6 +4,7 @@ import sys
 import time
 import datetime
 import six
+import json
 
 
 
@@ -23,16 +24,18 @@ class utc(datetime.tzinfo):
 for title, rev, dt, author, comment in history:
     content = mstore.page_revision(title, rev)
     ts = dt.replace(tzinfo=utc())
+    # print(ts)
+    # continue
     if rev == -1:
         six.print_('\tDELETE')
         dbstore.delete_page(title, author, comment, ts=ts)
     else:
-        dbstore.save_data(title, content, author=author, comment=comment, ts=ts)
+        dbstore.save_data(title, content, author=author, comment=comment, ts=ts, new=rev==0)
     six.print_(title, rev)
 
-# wiki = wikicache.CachedWiki(hatta.WikiConfig())
-# wiki.storage = dbstore
-# wiki.index = dbsearch.WikiDBSearch('/tmp/wiki/false-dilemma/', 'en', dbstore)
-# wiki.index.update(wiki)
 
+conf = {u'PAGE_PATH': u'om.paragate.club', u'SITE_NAME': u'false-dilemma'}
+with dbstore.fs.open(u'/.config/wiki/localhost:8080', owner=u'root', mode=u'w') as fp:
+    fp.write(json.dumps(conf))
 
+dbstore.fs.set_perm(u'/.config/wiki/', u'*', u'r')

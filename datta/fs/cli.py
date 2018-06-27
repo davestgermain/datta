@@ -72,11 +72,12 @@ def main():
                 six.print_(row)
                 six.print_('=' * (len(row) +32))
                 printed = True
-            p.created = p.created.strftime(timeformat)
-            p.modified = p.modified.strftime(timeformat)
-            p.content_type = six.text_type(p.get('content_type', ''))
+            info = p.to_dict()
+            info['created'] = p.created.strftime(timeformat)
+            info['modified'] = p.modified.strftime(timeformat)
+            info['content_type'] = six.text_type(p.get('content_type', ''))
             # print(p.to_dict())
-            row = templ.format(**p.to_dict())
+            row = templ.format(**info)
             six.print_(row)
     elif args.command == 'cat':
         with man.open(args.path, mode=Perm.read, rev=args.version, owner=owner) as fp:
@@ -141,7 +142,7 @@ def main():
         if args.recurse:
             six.print_(man.rmtree(args.path, include_history=args.history))
         else:
-            if not man.delete(args.path, include_history=args.history):
+            if not man.delete(args.path, owner=owner, include_history=args.history):
                 return -1
     elif args.command == 'mv':
         if not man.rename(args.frompath, args.topath):
@@ -151,15 +152,16 @@ def main():
         six.print_(row.format(rev='Rev', length='Size', owner='Owner', created='Created', meta='Meta'))
         six.print_('=' * 80)
         for info in man.get_meta_history(args.path):
+            idict = info.to_dict()
             if info.path != args.path:
                 six.print_('\t', info.path)
-            info.created = str(info.created)
+            idict['created'] = str(info.created)
             owner = info.owner
             if not isinstance(owner, six.text_type):
-                info.owner = owner.decode('utf8')
+                idict['owner'] = owner.decode('utf8')
             if not info.length:
-                info.length = 0
-            six.print_(row.format(**info.to_dict()))
+                idict['length'] = 0
+            six.print_(row.format(**idict))
     elif args.command == 'shell':
         from IPython import start_ipython
         ns = {

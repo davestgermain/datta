@@ -4,6 +4,8 @@ from flask.config import Config
 from werkzeug.datastructures import ImmutableDict
 import json
 import os.path
+import six
+
 
 DEFAULTS = ImmutableDict({
     'MENU_PAGE': 'Menu',
@@ -31,11 +33,15 @@ class MultiConfig(Config):
             'DEFAULT': dict(DEFAULTS)
         }
         for fp in fs.listdir(path, open_files=True):
-            domain = os.path.basename(fp.path)
+            path = fp.path
+            if not isinstance(path, six.text_type):
+                path = path.decode('utf8')
+            domain = six.text_type(os.path.basename(path))
             conf = dict(DEFAULTS)
             with fp:
                 conf.update(json.load(fp))
             configs[domain] = conf
+            six.print_('CONFIGURED', domain, conf)
         self.configs = configs
         self.current_domain = 'DEFAULT'
         self.update(configs[self.current_domain])

@@ -76,7 +76,7 @@ class WikiStorage(object):
     def __iter__(self):
         return self.all_pages()
 
-    def save_data(self, title, data, author=None, comment=None, parent_rev=None, ts=None):
+    def save_data(self, title, data, author=None, comment=None, parent_rev=None, ts=None, new=False):
         """Save a new revision of the page. If the data is None, deletes it."""
         _ = self._
         user = author or _('anon')
@@ -101,6 +101,8 @@ class WikiStorage(object):
             if parent_rev:
                 fp.meta[u'parent'] = parent_rev
             if ts:
+                if new:
+                    fp.created = ts
                 fp.modified = ts
             fp.write(data)
 
@@ -137,7 +139,7 @@ class WikiStorage(object):
                     raise
                 raise error.NotFoundErr()
         if meta_only:
-            return fp.rev, fp.modified.replace(tzinfo=None), fp.owner, fp.meta.get(u'comment', '')
+            return fp.rev, fp.modified, fp.owner, fp.meta.get(u'comment', '')
         else:
             return fp
 

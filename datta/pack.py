@@ -5,22 +5,18 @@ import time
 import six
 import base64
 import uuid
+from datta.ext.subspace import Subspace
 
+if hasattr(datetime, 'fromisoformat'):
+    from_isoformat = datetime.fromisoformat
+else:
+    from dateutil.parser import isoparse as from_isoformat
+    
 
 if six.PY2:
-    def to_timestamp(dt):
-        if isinstance(dt, datetime):
-            return time.mktime(dt.utctimetuple())
-        else:
-            return dt
     def do_unpack(data):
         return unpackb(data, encoding='utf8', use_list=False)
 else:
-    def to_timestamp(dt):
-        if isinstance(dt, datetime):
-            return dt.timestamp()
-        else:
-            return dt
     def do_unpack(data):
         return unpackb(data, raw=False, use_list=False)
 
@@ -30,11 +26,15 @@ class SlotMaker(type):
     def make_datetime_prop(cls, attrname):
         def getter(self):
             val = getattr(self, attrname, None)
-            if isinstance(val, float):
+            if isinstance(val, (six.binary_type, six.text_type)):
+                val = from_isoformat(val)
+            elif isinstance(val, (int, float)):
                 val = datetime.fromtimestamp(val)
             return val
         def setter(self, dt):
-            setattr(self, attrname, to_timestamp(dt))
+            if isinstance(dt, datetime):
+                dt = dt.isoformat()
+            setattr(self, attrname, dt)
         def deller(self):
             setattr(self, attrname, None)
         return property(fget=getter, fset=setter, fdel=deller)
@@ -44,10 +44,24 @@ class SlotMaker(type):
         def getter(self):
             val = getattr(self, attrname, None)
             if isinstance(val, six.binary_type):
-                val = uuid.UUID(byted=val)
+                val = uuid.UUID(bytes=val)
             return val
         def setter(self, dt):
             setattr(self, attrname, dt.bytes)
+        def deller(self):
+            setattr(self, attrname, None)
+        return property(fget=getter, fset=setter, fdel=deller)
+
+    @classmethod
+    def make_key_prop(cls, attrname):
+        def getter(self):
+            val = getattr(self, attrname, None)
+            if isinstance(val, six.binary_type):
+                val = Subspace(rawPrefix=val)
+            return val
+        def setter(self, dt):
+            if dt:
+                setattr(self, attrname, dt.key())
         def deller(self):
             setattr(self, attrname, None)
         return property(fget=getter, fset=setter, fdel=deller)
@@ -62,9 +76,13 @@ class SlotMaker(type):
                 rfield = '_' + field
                 cdict[field] = cls.make_datetime_prop(rfield)
                 field = rfield
-            elif field == uuid.UUID:
+            elif ftype == uuid.UUID:
                 rfield = '_' + field
                 cdict[field] = cls.make_uuid_prop(rfield)
+                field = rfield
+            elif ftype in (Subspace, 'key'):
+                rfield = '_' + field
+                cdict[field] = cls.make_key_prop(rfield)
                 field = rfield
             slots.append(field)
         if not slots:
