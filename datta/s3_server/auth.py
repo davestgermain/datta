@@ -4,7 +4,7 @@ import uuid
 import codecs
 import re
 from datetime import datetime
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote, unquote
 from sanic.log import error_logger
 try:
     import secrets
@@ -142,6 +142,7 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
     path = parsed_url.path
     if path == '//':
         path = '/'
+
     canonical_req = [method, path, canonical_q]
     for header, value in signed_headers:
         value = ' '.join(value.strip().split())
@@ -162,7 +163,7 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
     signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
     if recv_sig is not None and signature != recv_sig:
         error_logger.error('BAD SIGNATURE gen:%s rec:%s headers:%r', signature, recv_sig, signed_headers)
-        error_logger.error(canonical_req)
+        error_logger.error('\n' + canonical_req)
         error_logger.error(string_to_sign)
         return False
     return signature

@@ -309,12 +309,13 @@ class BaseKVFSManager(BaseManager):
                 nd += delimiter
 
             dirname = nd
+        count = 0
         with self._begin(buffers=True) as tr:
             start = self._make_file_key(dirname).key()[:-1]
             end = start + b'\xff'
 
             nc = dirname.count(delimiter)
-            for k, v in tr.get_range(start, end, limit=limit):
+            for k, v in tr.get_range(start, end):
                 k = self._files.unpack(k)[0]
                 path = u'/' + u'/'.join(k)
 
@@ -339,6 +340,10 @@ class BaseKVFSManager(BaseManager):
                         continue
                     meta.path = path
                     yield meta
+                if limit:
+                    count += 1
+                    if count == limit:
+                        break
 
     def rmtree(self, directory, include_history=False):
         if not isinstance(directory, six.text_type):

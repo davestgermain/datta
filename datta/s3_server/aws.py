@@ -1,5 +1,6 @@
 import os.path
 import hashlib
+from html import escape
 
 
 async def write_async(write_buf, chunk):
@@ -32,7 +33,7 @@ async def read_request(request, write_buf):
         await write_async(write_buf, request.body)
 
 
-def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, delimiter='/'):
+def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, delimiter='/', marker=None):
     is_truncated = 'false'
     contents = []
     last_key = None
@@ -43,13 +44,15 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, del
         key = row.path.replace(bucket_prefix, '', 1)
         if key == bucket_prefix[:-1]:
             continue
+
+        key = escape(key)
         # if delimiter:
         #     skey = key[prefix_len:].split(delimiter)
         #     if len(skey) > 1:
         #         common_prefixes.add(prefix + skey[0] + delimiter)
         #         continue
-        # if marker and key <= marker:
-        #     continue
+        if marker and key <= marker:
+            continue
         last_marker = key
 
         if versions:
@@ -91,8 +94,8 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, del
                 contents.append('</Version>')
             else:
                 contents.append('</Contents>')
-            key_count += 1
-        
+        key_count += 1
+
         last_key = key
         if key_count == maxkeys:
             is_truncated = 'true'
@@ -156,7 +159,8 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     if versions:
         element = 'ListVersionsResult'
 
-    iterator = fs.listdir(path, owner=owner or '*', delimiter=delimiter, limit=maxkeys, walk=not delimiter)
+
+    iterator = fs.listdir(path, owner=owner or '*', delimiter=delimiter, walk=not delimiter)
     preamble = '''<?xml version="1.0" encoding="UTF-8"?>'''\
 '''<%s xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
         <Name>%s</Name>
@@ -169,7 +173,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
 
     bucket_prefix = '/%s/' % bucket
 
-    contents, count, last_key, is_truncated, subdirs, last_marker = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions)
+    contents, count, last_key, is_truncated, subdirs, last_marker = make_contents(fs, iterator, bucket_prefix, maxkeys=maxkeys, versions=versions, marker=marker)
     yield preamble
     yield from contents
     if last_key:
