@@ -76,6 +76,10 @@ def main():
     #     import asyncio
     #     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
+    app.config.REQUEST_TIMEOUT = 120
+    app.config.KEEP_ALIVE = 600
+    app.config.REQUEST_MAX_SIZE = 200000000
+
     try:
         app.run(
             host=args.addr,
