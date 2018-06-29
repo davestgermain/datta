@@ -76,7 +76,12 @@ def main():
             info['created'] = p.created.strftime(timeformat)
             info['modified'] = p.modified.strftime(timeformat)
             info['content_type'] = six.text_type(p.get('content_type', ''))
-            # print(p.to_dict())
+            if not info['owner']:
+                info['owner'] = ''
+            if not info['meta']:
+                info['meta'] = {}
+            if info['length'] is None:
+                info['length'] = -1
             row = templ.format(**info)
             six.print_(row)
     elif args.command == 'cat':

@@ -2,6 +2,7 @@ from collections import namedtuple
 import operator
 import six
 import lmdb
+import sys
 
 
 KeyValue = namedtuple('KeyValue', ('key', 'value'))
@@ -14,8 +15,10 @@ class TransactionalEnvironment(object):
             env = lmdb.Environment(filename,
                                  map_size=env_args.get('map_size', 10**10),
                                  max_dbs=env_args.get('max_dbs', 200),
-                                 writemap=env_args.get('writemap', True),
+                                 max_readers=env_args.get('max_readers', 200),
+                                 writemap=env_args.get('writemap', sys.platform != 'darwin'),
                                  meminit=env_args.get('meminit', False),
+                                 readahead=env_args.get('readahead', True),
                                  sync=env_args.get('sync', True))
             
         self.env = env

@@ -26,7 +26,9 @@ class SlotMaker(type):
     def make_datetime_prop(cls, attrname):
         def getter(self):
             val = getattr(self, attrname, None)
-            if isinstance(val, (six.binary_type, six.text_type)):
+            if isinstance(val, six.binary_type):
+                val = val.decode('utf8')
+            if isinstance(val, six.text_type):
                 val = from_isoformat(val)
             elif isinstance(val, (int, float)):
                 val = datetime.fromtimestamp(val)
@@ -34,6 +36,8 @@ class SlotMaker(type):
         def setter(self, dt):
             if isinstance(dt, datetime):
                 dt = dt.isoformat()
+                if six.PY2:
+                    dt = dt.decode('utf8')
             setattr(self, attrname, dt)
         def deller(self):
             setattr(self, attrname, None)

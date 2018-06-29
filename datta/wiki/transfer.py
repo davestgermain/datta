@@ -10,7 +10,7 @@ import json
 
 mstore = hatta.storage.WikiStorage(sys.argv[1])
 dsn = 'lmdb:///Users/dcs/lmdbfs/'
-dsn = 'lmdb:///tmp/wiki/'
+# dsn = 'lmdb:///tmp/wiki/'
 dbstore = dbstorage.WikiStorage(dsn)
 dbstore.set_wiki('om.paragate.club')
 

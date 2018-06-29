@@ -403,7 +403,7 @@ class VersionedFile(io.BufferedIOBase):
     def __init__(self, manager, filename, mode=Perm.read, requestor=Owner.ALL, meta=None, rev=None, **kwargs):
         io.BufferedIOBase.__init__(self)
         self.path = self.name = filename
-        manager.check_perm(self.path, owner=requestor, perm=mode)
+        # manager.check_perm(self.path, owner=requestor, perm=mode)
         self.created = self.modified = None
         self.data = None
         self.meta = meta or {}
@@ -413,7 +413,8 @@ class VersionedFile(io.BufferedIOBase):
         self.bs = 8192
         self._cipher = None
         self.manager = manager
-        self._file_info = manager.get_file_metadata(filename, rev, mode=mode)
+        self._file_info = manager.get_metadata_and_check_perm(filename, rev, mode=mode, owner=requestor)
+        # self._file_info = manager.get_file_metadata(filename, rev, mode=mode)
         if self._file_info:
             self.update(self._file_info)
 

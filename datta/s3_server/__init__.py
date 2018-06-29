@@ -2,6 +2,7 @@
 from sanic import Sanic, log
 from . import api, admin, vhost, auth
 from ..fs import get_manager
+import atexit
 
 
 
@@ -13,12 +14,14 @@ app = Sanic('s3-server')
 
 
 @app.listener('before_server_start')
-async def setup_routes(app, loop):
+async def setup_routes_and_db(app, loop):
+    app.fs = get_manager(app.config.FS_DSN, debug=app.debug, event_model='asyncio')
+    atexit.register(app.fs.close)
+    
     vhost.init_app(app)
 
     app.blueprint(admin.bp)
     app.blueprint(api.bp)
-
 
 
 @app.middleware('request')
@@ -43,7 +46,6 @@ def main():
     import argparse
     import os.path
     import sys
-    import atexit
 
     parser = argparse.ArgumentParser(prog='datta.s3_server', description='start the s3 compatible server')
     parser.add_argument('-d', default='fdb', dest='dsn', help='DSN for file manager')
@@ -63,8 +65,6 @@ def main():
     if app.root_host:
         app.middleware('request')(handle_wildcard)
         
-    app.fs = get_manager(args.dsn, debug=args.debug, event_model='asyncio')
-    atexit.register(app.fs.close)
     if args.cert_path:
         import ssl
         ssl_context = ssl.SSLContext()
@@ -76,6 +76,7 @@ def main():
     #     import asyncio
     #     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
+    app.config.FS_DSN = args.dsn
     app.config.REQUEST_TIMEOUT = 120
     app.config.KEEP_ALIVE = 600
     app.config.REQUEST_MAX_SIZE = 200000000

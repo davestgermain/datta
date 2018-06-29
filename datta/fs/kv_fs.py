@@ -158,6 +158,11 @@ class BaseKVFSManager(BaseManager):
             combined.rev = hist.rev
         return combined
 
+    def get_metadata_and_check_perm(self, path, rev, mode=None, owner=None):
+        with self._begin(buffers=True) as tr:
+            self.check_perm(path, owner=owner, perm=mode, tr=tr)
+            return self.get_file_metadata(path, rev, tr=tr, mode=mode)
+
     def save_file_data(self, path, meta, buf, cipher=None):
         rev = meta.get(u'rev', None)
         created = meta[u'created'] or now()

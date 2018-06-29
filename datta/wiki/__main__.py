@@ -12,7 +12,11 @@ from datta.wiki.wiki import Wiki
 def main(wiki=None):
     """Start a standalone WSGI server."""
 
-    wiki = wiki or Wiki()
+    if len(sys.argv) > 1:
+        dsn = sys.argv[1]
+    else:
+        sys.exit(1)
+    wiki = wiki or Wiki(dsn=dsn)
     
     host, port = (wiki.config.get('interface', '0.0.0.0'),
                   int(wiki.config.get('port', 8080)))
