@@ -3,16 +3,14 @@ import os.path
 from datetime import datetime
 import hashlib
 from urllib.parse import unquote, quote
-from sanic import Blueprint, response, exceptions
-from sanic.views import HTTPMethodView
-from sanic.views import stream as stream_decorator
-from sanic import log
+from quart import Blueprint, request, Response, current_app, exceptions
+from quart.views import MethodView
 from .util import aws_error_response, \
         xml_response, get_etag, get_xml, \
         good_response, asynread
 from . import aws, auth
 
-bp = Blueprint('api')
+bp = Blueprint(__name__, 'datta.s3_server.api')
 
 
 def get_website_index(fs, path, user=None):
@@ -22,13 +20,13 @@ def get_website_index(fs, path, user=None):
             return fs.open(index_path, owner=user or '*')
         except FileNotFoundError:
             path = index_path
-    raise exceptions.NotFound(path)
+    raise exceptions.NotFound()
 
 
     
-class BucketView(HTTPMethodView):
-    async def get(self, request, bucket):
-        fs = request.app.fs
+class BucketView(MethodView):
+    async def get(self, bucket):
+        fs = current_app.fs
         qs = request.query_string
         prefix = request.args.get('prefix', '')
 
@@ -36,7 +34,7 @@ class BucketView(HTTPMethodView):
         if qs in ('location=', 'location'):
             return xml_response('<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
         elif qs == 'policy=':
-            return response.json(auth.get_acl(shelf, bucket))
+            return jsonify(auth.get_acl(shelf, bucket))
         elif 'uploads' in qs:
             path = bucket
             if prefix:
@@ -50,7 +48,7 @@ class BucketView(HTTPMethodView):
         elif qs in ('logging', 'logging='):
             return xml_response('')
         elif qs in ('acl=', 'acl'):
-            return xml_response(aws.get_acl_response(fs, '/' + bucket, request['username']))
+            return xml_response(aws.get_acl_response(fs, '/' + bucket, request.username))
 
         delimiter = request.args.get('delimiter', '')
         end_key = request.args.get('end')
@@ -64,29 +62,29 @@ class BucketView(HTTPMethodView):
                                     bucket,
                                     prefix=prefix,
                                     delimiter=delimiter,
-                                    owner=request['username'],
+                                    owner=request.username,
                                     marker=marker,
                                     maxkeys=max_keys,
                                     versions='versions' in request.query_string)
-            async def iterator(resp):
+            async def iterator():
                 try:
                     for chunk in s3iter:
-                        resp.write(chunk)
+                        yield chunk.encode('utf8')
                 except KeyError:
-                    resp.write(aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).body)
+                    yield await aws_error_response(404, 'BucketNotFound', bucket, bucket=bucket).get_data()
             return xml_response(iterator=iterator)
         else:
             fp = get_website_index(fs, '/%s/' % bucket)
-            return good_response(request, fp)
+            return good_response(fp)
 
 
-    async def put(self, request, bucket):
-        user = request['username']
+    async def put(self, bucket):
+        user = request.username
 
         headers = {}
         if user:
             path = '/' + bucket
-            fs = request.app.fs
+            fs = current_app.fs
             config = fs.get_path_config(path)
             if request.query_string in ('acl=', 'acl'):
                 raise NotImplementedError('setting acls')
@@ -103,16 +101,16 @@ class BucketView(HTTPMethodView):
                     acl['*'].append('w')
                 fs.set_acl(path, acl)
                 headers['Location'] = path
-                log.logger.info('Created bucket %s', bucket)
-        return response.text('', headers=headers)
+                current_app.logger.info('Created bucket %s', bucket)
+        return Response('', headers=headers)
 
-    async def post(self, request, bucket):
-        fs = request.app.fs
+    async def post(self, bucket):
+        fs = current_app.fs
         if request.query_string == 'delete=':
-            tree = get_xml(request)
+            tree = await get_xml()
             keys = [key.text for key in tree.findall('Object/Key')]
             resp = '<?xml version="1.0" encoding="UTF-8"?>\n<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
-            user = request['username']
+            user = request.username
             for key in keys:
                 keyelt = '<Key>%s</Key>' % key
                 if fs.delete(os.path.join(bucket, key), owner=user):
@@ -124,31 +122,31 @@ class BucketView(HTTPMethodView):
             resp = ''
         return xml_response(resp)
 
-    async def delete(self, request, bucket):
-        if request['username']:
+    async def delete(self, bucket):
+        if request.username:
             path = '/' + bucket
-            if request.app.fs.check_perm(path, request['username'], 'd'):
-                request.app.fs.rmtree(path)
+            if current_app.fs.check_perm(path, request.username, 'd'):
+                current_app.fs.rmtree(path)
         return xml_response('')
 
-    async def head(self, request, bucket):
-        return response.text('')
+    async def head(self, bucket):
+        return Response('')
 
 
-class ObjectView(HTTPMethodView):
+class ObjectView(MethodView):
     def path(self, bucket, key):
         return unquote('/{}/{}'.format(bucket, key))
 
-    async def get(self, request, bucket, key):
+    async def get(self, bucket, key):
         if 'uploadId' in request.args:
-            return await self.multipart_upload(request, bucket, key)
+            return await self.multipart_upload(bucket, key)
         path = self.path(bucket, key)
-        fs = request.app.fs
+        fs = current_app.fs
         if request.query_string in ('acl=', 'acl'):
-            return xml_response(aws.get_acl_response(fs, path, request['username']))
+            return xml_response(aws.get_acl_response(fs, path, request.username))
         headers = {}
 
-        owner = request['username']
+        owner = request.username
         try:
             fp = fs.open(path, owner=owner)
         except FileNotFoundError:
@@ -158,24 +156,13 @@ class ObjectView(HTTPMethodView):
             else:
                 return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
-            log.logger.error('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
+            current_app.logger.error('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
-        for key, value in fp.meta.items():
-            if isinstance(value, bytes):
-                value = value.decode('utf8')
-            else:
-                value = str(value)
-            headers['x-amz-meta-%s' % key] = value
-        headers['x-amz-rev'] = str(fp.rev)
-
-        return good_response(request,
-                            fp,
+        return good_response(fp,
                             headers=headers)
 
-    async def head(self, request, bucket, key):
-        resp = await self.get(request, bucket, key)
-        resp.body = b''
-        return resp
+    async def head(self, bucket, key):
+        return await self.get(bucket, key)
 
     async def read_from_buf(self, from_buf, to_buf):
         while 1:
@@ -184,18 +171,17 @@ class ObjectView(HTTPMethodView):
                 break
             to_buf.write(chunk)
 
-    # @stream_decorator
-    async def put(self, request, bucket, key):
+    async def put(self, bucket, key):
         if 'uploadId' in request.args:
-            return await self.multipart_upload(request, bucket, key)
+            return await self.multipart_upload(bucket, key)
         if request.query_string in ('acl=', 'acl'):
             raise NotImplementedError('setting acls')
 
-        fs = request.app.fs
+        fs = current_app.fs
         # data = request.body or b''
         value = None
         copy = False
-        owner = request['username'] or 'anon'
+        owner = request.username or 'anon'
 
         copy_file = None
         if 'x-amz-copy-source' in request.headers:
@@ -247,32 +233,32 @@ class ObjectView(HTTPMethodView):
                 ''' % (getattr(fp, 'created', time.time()), headers['Etag'])
         else:
             resp = ''
-        return response.text(resp, headers=headers)
+        return Response(resp, headers=headers)
 
-    async def delete(self, request, bucket, key):
+    async def delete(self, bucket, key):
         path = self.path(bucket, key)
-        config = request.app.fs.get_path_config(path)
+        config = current_app.fs.get_path_config(path)
         include_history = not config.get('versioning', True)
         try:
-            if request.app.fs.delete(path, owner=request['username'], include_history=include_history):
-                return response.text('')
+            if current_app.fs.delete(path, owner=request.username, include_history=include_history):
+                return Response('')
             else:
                 return aws_error_response(404, 'NoSuchKey', key, bucket=bucket, key=key)
         except PermissionError:
             return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
 
-    async def post(self, request, bucket, key):
-        return await self.multipart_upload(request, bucket, key)
+    async def post(self, bucket, key):
+        return await self.multipart_upload(bucket, key)
 
-    async def multipart_upload(self, request, bucket, key):
-        fs = request.app.fs
+    async def multipart_upload(self, bucket, key):
+        fs = current_app.fs
         upload_id = request.args.get('uploadId', '')
         partnum = request.args.get('partNumber', '')
         iterator = None
         headers = {}
         body = ''
         path = self.path(bucket, key)
-        owner = request['username']
+        owner = request.username
         print('doing multipart upload', path, request.method, upload_id, partnum, owner)
 
         if not upload_id:
@@ -289,12 +275,13 @@ class ObjectView(HTTPMethodView):
             </InitiateMultipartUploadResult>'''.format(bucket=bucket, key=key, uploadid=partial.id)
         elif request.method == 'POST':
             # complete request
-            tree = get_xml(request)
+            tree = await get_xml()
             try:
                 partial = fs.partial(path, id=upload_id)
             except PermissionError:
                 return aws_error_response(403, 'AccessDenied', key, bucket=bucket, key=key)
-            async def iterator(response):
+            url = request.path
+            async def iterator():
                 partnums = []
                 for part in tree.findall('{http://s3.amazonaws.com/doc/2006-03-01/}Part/{http://s3.amazonaws.com/doc/2006-03-01/}PartNumber'):
                     partnums.append(part.text)
@@ -302,10 +289,9 @@ class ObjectView(HTTPMethodView):
                 try:
                     value = partial.combine(partnums, owner=owner)
                 except FileNotFoundError:
-                    return aws_error_response(404, 'NoSuchUpload', key, bucket=bucket, key=key)
+                    yield aws_error_response(404, 'NoSuchUpload', key, bucket=bucket, key=key).get_data()
                 etag = value.meta['sha256']
                 # etag = get_etag(value.data)
-                url = request.path
                 body = '''<?xml version="1.0" encoding="UTF-8"?>
             <CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
               <Location>{url}</Location>
@@ -314,7 +300,8 @@ class ObjectView(HTTPMethodView):
               <ETag>{etag}</ETag>
             </CompleteMultipartUploadResult>'''.format(url=url, bucket=bucket, key=key, etag=etag)
                 print(body)
-                response.write(body)
+                yield body.encode('utf8')
+
         elif request.method == 'PUT':
             partial = fs.partial(path, id=upload_id)
             content_type = request.headers.get('Content-Type', 'application/octet-stream')
@@ -342,81 +329,59 @@ class ObjectView(HTTPMethodView):
                                                               upload_id=upload_id,
                                                               user=owner)
             partial = fs.partial(path, id=upload_id)
-            async def iterator(response):
-                response.write(start_xml)
+            async def iterator():
+                yield start_xml.encode('utf8')
                 firstnum = None
                 try:
                     maxparts = 0
                     partnum = 0
                     for partnum, meta in partial.list():
                         if firstnum is None:
-                            response.write('''<PartNumberMarker>{partnum}</PartNumberMarker>'''.format(partnum))
+                            yield '''<PartNumberMarker>{partnum}</PartNumberMarker>'''.format(partnum).encode('utf8')
                             firstnum = partnum
-                        response.write('''
+                        yield '''
                         <Part>
                           <PartNumber>{partnum}</PartNumber>
                           <ETag>&quot;{etag}&quot;</ETag>
                           <Size>{size}</Size>
                         </Part>
-                        '''.format(partnum=partnum, etag=meta.get('md5'), size=meta['length']))
+                        '''.format(partnum=partnum, etag=meta.get('md5'), size=meta['length']).encode('utf8')
                         maxparts = partnum
                 except KeyError:
                     # no parts?
                     partnum = 0
                     maxparts = 1
-                response.write('''
+                yield '''
                 <NextPartNumberMarker>{lastpartnum}</NextPartNumberMarker>
                 <IsTruncated>false</IsTruncated>
                 <MaxParts>{maxparts}</MaxParts>
                 </ListPartsResult>
-                '''.format(maxparts=maxparts, lastpartnum=partnum + 1))
+                '''.format(maxparts=maxparts, lastpartnum=partnum + 1).encode('utf8')
         return xml_response(body, iterator=iterator, headers=headers)
 
 
-@bp.route('/')
-async def index(request):
-    fs = request.app.fs
-    user = request['username'] or ''
-    uid = hashlib.md5(user.encode('utf8')).hexdigest()
-    iterator = auth.available_buckets(fs, user=user)
-    async def stream(response):
-        list_buckets = '''<?xml version="1.0" encoding="UTF-8"?>
-<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-<Owner>
-    <ID>%s</ID>
-    <DisplayName>%s</DisplayName>
-</Owner>
-<Buckets>
-        '''
-        response.write(list_buckets % (uid, user))
-        for info in iterator:
-            data = '<Bucket><Name>%s</Name><CreationDate>%sZ</CreationDate></Bucket>' % (info, datetime.utcnow().isoformat())
-            response.write(data)
-        response.write('</Buckets></ListAllMyBucketsResult>')
-    return xml_response(iterator=stream)
 
-
-class SimpleAPI(HTTPMethodView):
-    async def list(self, request, path):
-        listiter = request.app.fs.listdir(path, owner=request['username'])
-        async def iterator(resp):
+class SimpleAPI(MethodView):
+    async def list(self, path):
+        listiter = current_app.fs.listdir(path, owner=request.username)
+        async def iterator():
             for p in listiter:
-                resp.write(response.json_dumps(p) + '\n')
-        return response.StreamingHTTPResponse(iterator, status=200, content_type='application/json')
+                yield (jsonify(p) + '\n').encode('utf8')
+        return Response(iterator(), status=200, content_type='application/json')
 
-    async def get(self, request, path):
+    async def get(self, path):
         path = unquote('/' + path)
         if path.endswith('/'):
-            return await self.list(request, path)
+            return await self.list(path)
 
-        fs = request.app.fs
+        fs = current_app.fs
         rev = request.args.get('rev', None)
         if rev:
             rev = int(rev)
         try:
-            fp = fs.open(path, owner=request['username'], rev=rev)
+            fp = fs.open(path, owner=request.username, rev=rev)
         except FileNotFoundError:
-            raise exceptions.NotFound(path)
+            raise exceptions.NotFound()
         except PermissionError:
             raise exceptions.Forbidden(path)
         headers = {}
@@ -424,18 +389,17 @@ class SimpleAPI(HTTPMethodView):
             headers['x-meta-%s' % key] = value if isinstance(value, str) else value.decode('utf8')
         headers['x-rev'] = str(fp.rev)
 
-        return good_response(request,
-                            fp,
+        return good_response(fp,
                             headers=headers)
             
 
     async def put(self, path):
         path = unquote('/' + path)
-        fs = request.app.fs
+        fs = current_app.fs
         ctype = request.headers.get('content-type', '')
         print('UPLOADING', path, request.headers, ctype)
         try:
-            with fs.open(path, mode='w', owner=request['username']) as fp:
+            with fs.open(path, mode='w', owner=request.username) as fp:
                 fp.do_hash('md5')
                 fp.content_type = ctype
                 for metakey in request.headers:
@@ -448,24 +412,45 @@ class SimpleAPI(HTTPMethodView):
                     fp.meta['expiration'] = float(expiration)
                 await aws.read_request(request, fp)
         except FileNotFoundError:
-            raise exceptions.NotFound(path)
+            raise exceptions.NotFound()
         except PermissionError:
-            raise exceptions.Forbidden(path)
-        return response.text(fp.meta['md5'])
+            raise exceptions.Forbidden()
+        return Response(fp.meta['md5'])
 
     async def delete(self, path):
         path = unquote('/' + path)
-        fs = request.app.fs
+        fs = current_app.fs
         try:
-            if request.app.fs.delete(path, owner=request['username']):
-                return response.text('')
+            if current_app.fs.delete(path, owner=request.username):
+                return Response('')
             else:
-                raise exceptions.NotFound(path)
+                raise exceptions.NotFound()
         except PermissionError:
             raise exceptions.Forbidden(path)
-        return response.text('')
+        return Response('')
 
 
-bp.add_route(SimpleAPI.as_view(), '/.simple/v1/<path:path>')
-bp.add_route(ObjectView.as_view(), '/<bucket>/<key:path>')
-bp.add_route(BucketView.as_view(), '/<bucket>')
+bp.add_url_rule('/.simple/v1/<path:path>', view_func=SimpleAPI.as_view('simple'))
+bp.add_url_rule('/<bucket>/<path:key>', view_func=ObjectView.as_view('object'))
+bp.add_url_rule('/<bucket>/', view_func=BucketView.as_view('bucket'))
+
+@bp.route('/')
+async def index():
+    fs = current_app.fs
+    user = request.username or ''
+    uid = hashlib.md5(user.encode('utf8')).hexdigest()
+    iterator = auth.available_buckets(fs, user=user)
+    async def stream():
+        list_buckets = '''<?xml version="1.0" encoding="UTF-8"?>
+<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Owner>
+    <ID>%s</ID>
+    <DisplayName>%s</DisplayName>
+</Owner>
+<Buckets>
+        '''
+        yield (list_buckets % (uid, user)).encode('utf8')
+        for info in iterator:
+            yield ('<Bucket><Name>%s</Name><CreationDate>%sZ</CreationDate></Bucket>' % (info, datetime.utcnow().isoformat())).encode('utf8')
+        yield b'</Buckets></ListAllMyBucketsResult>'
+    return xml_response(iterator=stream)

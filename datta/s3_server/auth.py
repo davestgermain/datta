@@ -5,7 +5,8 @@ import codecs
 import re
 from datetime import datetime
 from urllib.parse import urlsplit, quote, unquote
-from sanic.log import error_logger
+from quart import current_app
+
 try:
     import secrets
 except ImportError:
@@ -100,7 +101,7 @@ def user_from_request(fs, request):
                             headers['expect'] = '100-continue'
                         to_sign = sorted([(h.lower(), headers[h]) for h in HEAD_RE.search(auth_header).group(1).split(';')])
                     except (KeyError, IndexError) as e:
-                        error_logger.exception('header problem %s' % headers)
+                        current_app.logger.exception('header problem %s' % headers)
                         return
 
                     secret_key = user['secret_key']
@@ -117,7 +118,7 @@ def user_from_request(fs, request):
                         # print('USER ID', user['username'])
                         return user
                     else:
-                        error_logger.error('AUTH PROBLEM %s %s', valid, auth_header)
+                        current_app.logger.error('AUTH PROBLEM %s %s', valid, auth_header)
                 elif check_password(user, auth_pass):
                     return user
     return None
@@ -139,7 +140,7 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
         canonical_q.append(q)
     canonical_q.sort()
     canonical_q = '&'.join(canonical_q)
-    path = parsed_url.path
+    path = quote(parsed_url.path)
     if path == '//':
         path = '/'
 
@@ -162,9 +163,9 @@ def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3
 
     signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
     if recv_sig is not None and signature != recv_sig:
-        error_logger.error('BAD SIGNATURE gen:%s rec:%s headers:%r', signature, recv_sig, signed_headers)
-        error_logger.error('\n' + canonical_req)
-        error_logger.error(string_to_sign)
+        current_app.logger.error('BAD SIGNATURE gen:%s rec:%s headers:%r', signature, recv_sig, signed_headers)
+        current_app.logger.error('\n' + canonical_req)
+        current_app.logger.error(string_to_sign)
         return False
     return signature
 

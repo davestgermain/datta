@@ -1,3 +1,3 @@
 import sys
-from . import main
+from datta.s3_server import main
 sys.exit(main())

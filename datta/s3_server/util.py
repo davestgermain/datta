@@ -2,8 +2,8 @@ from datetime import datetime
 import time
 from hashlib import md5
 from xml.etree.ElementTree import fromstring
-from sanic import response, exceptions
-from sanic.handlers import ContentRangeHandler
+from quart import Response, request
+from quart.datastructures import Range, ContentRange
 import itertools
 
 counter = itertools.count()
@@ -20,13 +20,13 @@ ERROR_XML = '''<?xml version="1.0" encoding="UTF-8"?>
 def get_etag(data):
     return '"%s"' % md5(data or b'').hexdigest()
 
-def get_xml(request):
-    return fromstring(request.body.decode('utf8'))
+async def get_xml():
+    return fromstring((await request.get_data()).decode('utf8'))
 
 async def asynread(fp, size=-1):
     return fp.read(size)
 
-def good_response(request, fileobj, headers=None):
+def good_response(fileobj, headers=None):
     headers = headers or {}
     content_type = fileobj.content_type or 'application/octet-stream'
     if not isinstance(content_type, str):
@@ -34,7 +34,14 @@ def good_response(request, fileobj, headers=None):
 
     headers['Content-Type'] = content_type
     headers['Last-Modified'] = fileobj.modified.strftime("%a, %d %b %Y %H:%M:%S GMT")
-    
+    headers['x-amz-version-id'] = str(fileobj.rev)
+    for key, value in fileobj.meta.items():
+        if isinstance(value, bytes):
+            value = value.decode('utf8')
+        else:
+            value = str(value)
+        headers['x-amz-meta-%s' % key] = value
+
     status = 200
     headers['Accept-Ranges'] = 'bytes'
     brange = request.headers.get('range')
@@ -60,62 +67,49 @@ def good_response(request, fileobj, headers=None):
                     to_read = 0
     else:
         fileobj.st_size = fileobj.length
-        # print(brange)
-        try:
-            ranger = ContentRangeHandler(request, fileobj)
-        except exceptions.ContentRangeError as e:
-            # maybe this isn't exactly invalid
-            try:
-                r = brange.split('=')[1].split('-')
-                if r[0] == r[1] and int(r[0]) == fileobj.length - 1:
-                    # it's just the end of the file
-                    to_read = 0
-                    fileobj.seek(0, 2)
-                else:
-                    raise e
-            except:
-                raise e
-        else:
-            headers.update(ranger.headers)
-            fileobj.seek(ranger.start)
+        ranger = Range.from_header(brange)
+        fr = ranger.ranges[0]
+
+        headers['Content-Range'] = ContentRange(ranger.units, fr.begin, fr.end, fileobj.length).to_header()
+        fileobj.seek(fr.begin)
         
-            to_read = ranger.size
+        to_read = (fr.end - fr.begin) + 1
         status = 206
 
     if request.method == 'HEAD':
-        body = b''
-        to_read = 0
+        resp = Response('', headers=headers)
+        resp.content_length = fileobj.length
+        return resp
 
     if status >= 200 and (fileobj.length >= 65535 and (to_read == -1 or to_read >= 65535)):
         if to_read == -1:
             to_read = fileobj.length
-        async def iterator(resp):
+        async def iterator():
             nonlocal to_read
             blocksize = getattr(fileobj, 'bs', 8192)
+            # blocksize = 16384
             with fileobj:
                 while to_read > 0:
                     chunk = await asynread(fileobj, min(to_read, blocksize))
                     if chunk:
-                        resp.write(chunk)
+                        yield chunk
                         to_read -= len(chunk)
                     else:
                         break
-        return response.StreamingHTTPResponse(iterator, status=status, headers=headers, content_type=content_type)
+        return Response(iterator(), status=status, headers=headers, content_type=content_type)
     else:
         if to_read:
-            # print('reading', to_read, body)
             with fileobj:
                 body = fileobj.read(to_read)
-            # print(body)
-        headers['Content-Length'] = len(body)
-        return response.HTTPResponse(body_bytes=body, headers=headers, status=status, content_type=content_type)
+            # print(repr(body))
+        return Response(body, headers=headers, status=status, content_type=content_type)
 
 
 def xml_response(body=None, status=200, iterator=None, **kwargs):
     if iterator is not None:
-        return response.stream(iterator, content_type='text/xml', status=status, **kwargs)
+        return Response(iterator(), content_type='text/xml', status=status, **kwargs)
     else:
-        return response.text(body, content_type='text/xml', status=status, **kwargs)
+        return Response(body, content_type='text/xml', status=status, **kwargs)
 
 def aws_error_response(status, code, message, bucket='', key=''):
     request_id = next(counter)

@@ -1,23 +1,23 @@
 import os.path
 from datetime import datetime
 from urllib.parse import unquote_to_bytes
-from sanic import response, exceptions, router, log
+from quart import exceptions
 from .util import good_response
 
 CONFIG_BUCKET = '/.config/vhost/'
 
 def register(app, hosts, save=True):
     try:
-        app.add_route(view_vhost_page, '/<key:path>', methods=['GET', 'HEAD'], strict_slashes=True, host=hosts)
-        app.add_route(view_vhost_page, '/', methods=['GET', 'HEAD'], strict_slashes=True, host=hosts)
-        if save:
-            for host in hosts:
-                path = os.path.join(CONFIG_BUCKET, host)
-                hostconfig = {'bucket': host}
-                with app.fs.open(path, owner='root', mode='w') as fp:
-                    fp.write(repr(hostconfig))
-    except router.RouteExists:
+        app.add_url_rule('/<path:key>', view_vhost_page, methods=['GET', 'HEAD'], host=hosts)
+        app.add_url_rule('/', view_vhost_page, methods=['GET', 'HEAD'], host=hosts)
+    except AssertionError:
         return False
+    if save:
+        for host in hosts:
+            path = os.path.join(CONFIG_BUCKET, host)
+            hostconfig = {'bucket': host}
+            with app.fs.open(path, owner='root', mode='w') as fp:
+                fp.write(repr(hostconfig))
 
 def unregister(app, host, save=True):
     try:
@@ -41,10 +41,10 @@ def get_config_hosts(app):
 def init_app(app):
     hosts = get_config_hosts(app)
     register(app, hosts, save=False)
-    log.logger.info('Configured vhosts for %s', hosts)
+    app.logger.info('Configured vhosts for %s', hosts)
 
 
-async def view_vhost_page(request, key='index.html'):
+async def view_vhost_page(key='index.html'):
     fs = request.app.fs
     bucket = request.host
     path = os.path.join('/', bucket, key)
@@ -56,11 +56,10 @@ async def view_vhost_page(request, key='index.html'):
                 path += '/index.html'
                 fp = fs.open(path)
             except FileNotFoundError:
-                raise exceptions.NotFound(path)
+                raise exceptions.NotFound()
         else:
-            raise exceptions.NotFound(path)
+            raise exceptions.NotFound()
 
     headers = {}
-    return good_response(request,
-                         fp,
+    return good_response(fp,
                          headers=headers)

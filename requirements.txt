@@ -1,4 +1,5 @@
-sanic
+quart
+uvloop
 lmdb
 msgpack
 whoosh

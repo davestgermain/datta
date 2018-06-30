@@ -1,24 +1,23 @@
-from sanic import Blueprint, response, exceptions
+from quart import Blueprint, request, jsonify, current_app
 from . import auth
-# from .util import msg_response
 
-bp = Blueprint('admin')
+bp = Blueprint('admin', 'datta.s3_server.admin')
 
-@bp.post('/.sys/register')
-async def register(request):
+@bp.route('/.sys/register', methods=['POST'])
+async def register():
     username = None
-    auth_user = request['user']
+    auth_user = request.user
     if auth_user and auth_user.get('role') == 'admin':
         username = request.form.get('username', '')
     user, password = auth.register(request.app.fs, user=username)
-    return response.json({'name': user['username'], 'password': password, 'secret_key': user['secret_key']})
+    return jsonify({'name': user['username'], 'password': password, 'secret_key': user['secret_key']})
 
-@bp.post('/.sys/change_password')
-async def change_password(request):
+@bp.route('/.sys/change_password', methods=['POST'])
+async def change_password():
     password = request.form['password']
     
-    if request['user']:
-        auth.change_password(request.app.fs, request['user'], password)
+    if request.user:
+        auth.change_password(request.app.fs, request.user, password)
         status = 200
         resp = 'OK'
     else:
@@ -28,10 +27,10 @@ async def change_password(request):
 
 # @bp.route('/.sys/acl/<bucket>')
 # async def change_acl(request, bucket):
-#     if request['user']:
+#     if request.user:
 #         fs = request.app.fs
 #         operation = 'w' if method == 'PUT' else 'r'
-#         acl = auth.can_access_acl(fs, request['user']['username'], bucket, operation)
+#         acl = auth.can_access_acl(fs, request.user['username'], bucket, operation)
 #         if acl:
 #             if request.method == 'PUT':
 #                 new_acl = request.json()
@@ -56,7 +55,7 @@ async def vhost_config(request):
         action = request.form.get('action')
         if host:
             if action == 'register':
-                vhost.register(request.app, host)
+                vhost.register(current_app, host)
             elif action == 'unregister':
-                vhost.unregister(request.app, host[0])
-    return response.json(vhost.get_hosts(request.app))
+                vhost.unregister(current_app, host[0])
+    return jsonify(vhost.get_hosts(request.app))

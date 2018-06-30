@@ -10,16 +10,8 @@ async def read_request(request, write_buf):
     """
     Reads a chunked AWS request, and writes into write_buf
     """
-    if request.headers.get('x-amz-content-sha256') == 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD':
-        # if request.stream:
-        #     while True:
-        #         chunk = await request.stream.get()
-        #         if chunk is None:
-        #             break
-        #         fp.write(chunk)
-        
-        body = request.body
-        while body:
+    if request.headers.get('x-amz-content-sha256') == 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD':        
+        async for chunk in request.data:
             cline, body = body.split(b'\r\n', 1)
             size, sig = cline.split(b';')
             size = int(size, 16)
@@ -30,7 +22,7 @@ async def read_request(request, write_buf):
             # chunk ends with \r\n
             body = body[size + 2:]
     else:
-        await write_async(write_buf, request.body)
+        await write_async(write_buf, await request.get_data())
 
 
 def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, delimiter='/', marker=None):
@@ -201,11 +193,11 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     yield '</%s>' % element
 
 def list_partials(fs, bucket):
-    resp = ['''<?xml version="1.0" encoding="UTF-8"?>
+    yield '''<?xml version="1.0" encoding="UTF-8"?>
     <ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
       <Bucket>{bucket}</Bucket>
       <KeyMarker></KeyMarker>
-      <UploadIdMarker></UploadIdMarker><IsTruncated>false</IsTruncated>'''.format(bucket=bucket)]
+      <UploadIdMarker></UploadIdMarker><IsTruncated>false</IsTruncated>'''.format(bucket=bucket).encode('utf8')
 
     for p in fs.list_partials('/' + bucket):
         key = p['path'].replace(bucket, '', 1)
@@ -220,10 +212,10 @@ def list_partials(fs, bucket):
         <Initiated>{created}</Initiated>
 </Upload>
         '''.format(key=key, owner=p['owner'], created=created, id=p['id'])
-        resp.append(upload)
-    resp.append('</ListMultipartUploadsResult>')
-    return resp
-    
+        yield upload.encode('utf8')
+    yield b'</ListMultipartUploadsResult>'
+
+
 if __name__ == '__main__':
     from datta.fs import get_manager
     man = get_manager('fdb')

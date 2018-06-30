@@ -1,56 +1,63 @@
-# import logging
-from sanic import Sanic, log
+from quart import Quart, request, Request
+from quart.ctx import RequestContext
 from . import api, admin, vhost, auth
 from ..fs import get_manager
 import atexit
 
 
 
-# if not debug:
-#     LOGGING_CONFIG_DEFAULTS['loggers']['sanic.access']['level'] = 'ERROR'
 
-app = Sanic('s3-server')
+class VhostQuart(Quart):
+    def request_context(self, _request: Request) -> RequestContext:
+        if self.config['SERVER_NAME'] and not _request.host.startswith(self.config['SERVER_NAME']):
+            print(_request.host, self.config)
+            # this is a wildcard request
+            try:
+                bucket, host = _request.host.split('.', 1)
+                url = '/%s%s' % (bucket, _request.path)
+                _request.path = url
+            except ValueError:
+                pass
+        return super().request_context(_request)
+        
+app = VhostQuart('s3-server', host_matching=True, static_host='')
 
 
 
-@app.listener('before_server_start')
-async def setup_routes_and_db(app, loop):
-    app.fs = get_manager(app.config.FS_DSN, debug=app.debug, event_model='asyncio')
+@app.before_serving
+async def setup_routes_and_db():
+    app.fs = get_manager(app.config['FS_DSN'], debug=app.debug, event_model='asyncio')
     atexit.register(app.fs.close)
-    
-    vhost.init_app(app)
 
-    app.blueprint(admin.bp)
-    app.blueprint(api.bp)
+    if app.config['SERVER_NAME']:
+        vhost.init_app(app)
+
+    app.register_blueprint(admin.bp)
+    app.register_blueprint(api.bp)
 
 
-@app.middleware('request')
-async def get_user(request):
-    request['user'] = auth.user_from_request(app.fs, request)
-    if request['user']:
-        request['username'] = request['user']['username']
+
+@app.before_request
+async def get_user():
+    request.user = auth.user_from_request(app.fs, request)
+    if request.user:
+        request.username = request.user['username']
     else:
-        request['username'] = None
+        request.username = None
 
 
-async def handle_wildcard(request):
-    log.logger.debug(request.url)
-    if not request.host.startswith(app.root_host):
-        # this is a wildcard request
-        bucket, host = request.host.split('.', 1)
-        url = '/%s%s' % (bucket, request.path)
-        func, args, kwargs, pat = app.router._get(url, request.method, '')
-        return await func(request, *args, **kwargs)
 
 def main():
     import argparse
     import os.path
     import sys
+    from hypercorn import config, run
+    from quart.logging import create_serving_logger
 
     parser = argparse.ArgumentParser(prog='datta.s3_server', description='start the s3 compatible server')
     parser.add_argument('-d', default='fdb', dest='dsn', help='DSN for file manager')
     parser.add_argument('--debug', default=False, dest='debug', action='store_true')
-    parser.add_argument('-r', dest='host', default='', help='Root domain')
+    parser.add_argument('-r', dest='host', default='localhost:8484', help='Root domain')
     parser.add_argument('-c', dest='cert_path', help='Path to SSL certificates')
     parser.add_argument('-p', type=int, default=8484, help='port', dest='port')
     parser.add_argument('-a', default='127.0.0.1', help='addr', dest='addr')
@@ -61,10 +68,8 @@ def main():
     if args.debug:
         app.debug = True
 
-    app.root_host = args.host
-    if app.root_host:
-        app.middleware('request')(handle_wildcard)
-        
+    app.config['SERVER_NAME'] = args.host
+
     if args.cert_path:
         import ssl
         ssl_context = ssl.SSLContext()
@@ -76,19 +81,23 @@ def main():
     #     import asyncio
     #     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
-    app.config.FS_DSN = args.dsn
-    app.config.REQUEST_TIMEOUT = 120
-    app.config.KEEP_ALIVE = 600
-    app.config.REQUEST_MAX_SIZE = 200000000
+    app.config['FS_DSN'] = args.dsn
+    app.config['MAX_CONTENT_LENGTH'] = 80 * 1024 * 1024
 
-    try:
-        app.run(
-            host=args.addr,
-            port=args.port,
-            debug=args.debug,
-            workers=args.workers,
-            ssl=ssl_context,
-            access_log=args.debug)
-    except KeyboardInterrupt:
-        app.stop()
-        return 0
+    hc = config.Config()
+    hc.uvloop = True
+    hc.ssl = ssl_context
+    hc.port = args.port
+    hc.debug = hc.use_reloader = args.debug
+    hc.keep_alive_timeout = 600
+    
+    if hc.debug:
+        hc.access_log_format = "%(h)s %(m)s %(U)s?%(q)s %(s)s %(b)s %(D)s"
+        hc.access_logger = create_serving_logger()
+        # hc.access_log_target = '-'
+        hc.error_logger = hc.access_logger
+
+    if args.workers > 1:
+        run.run_multiple(app, hc, workers=args.workers)
+    else:
+        run.run_single(app, hc)
