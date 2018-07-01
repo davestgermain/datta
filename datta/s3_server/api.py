@@ -55,7 +55,7 @@ class BucketView(MethodView):
         marker = request.args.get('marker')
         max_keys = min(int(request.args.get('max-keys') or 1000), 1000)
 
-        s3_req = equest.headers.get('authorization') or request.headers.get('x-amz-content-sha256') or delimiter or prefix or marker
+        s3_req = request.headers.get('authorization') or request.headers.get('x-amz-content-sha256') or delimiter or prefix or marker
 
         if s3_req:
             s3iter = aws.list_bucket(fs,
