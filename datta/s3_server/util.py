@@ -66,15 +66,18 @@ def good_response(fileobj, headers=None):
                     body = b''
                     to_read = 0
     else:
-        fileobj.st_size = fileobj.length
-        ranger = Range.from_header(brange)
-        fr = ranger.ranges[0]
+        try:
+            ranger = Range.from_header(brange)
+        except ValueError:
+            print('BAD RANGE HEADER', brange)
+        else:
+            fr = ranger.ranges[0]
 
-        headers['Content-Range'] = ContentRange(ranger.units, fr.begin, fr.end, fileobj.length).to_header()
-        fileobj.seek(fr.begin)
+            headers['Content-Range'] = ContentRange(ranger.units, fr.begin, fr.end, fileobj.length).to_header()
+            fileobj.seek(fr.begin)
         
-        to_read = (fr.end - fr.begin) + 1
-        status = 206
+            to_read = (fr.end - fr.begin) + 1
+            status = 206
 
     if request.method == 'HEAD':
         resp = Response('', headers=headers)

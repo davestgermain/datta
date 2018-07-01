@@ -106,7 +106,12 @@ def user_from_request(fs, request):
 
                     secret_key = user['secret_key']
                     signature = SIG_RE.search(auth_header).group(1)
-                    valid = get_aws_signature(request.url,
+
+                    # the subdomain bucket handling code in __init__.py rewrites the path.
+                    # but signatures are computed based on the original path 
+                    path = getattr(request, 'original_path', request.path)
+                    valid = get_aws_signature(path,
+                                              request.query_string,
                                               request.method,
                                               to_sign,
                                               secret_key,
@@ -127,20 +132,18 @@ def user_from_request(fs, request):
 def sign(key, msg):
     return hmac.new(key, msg.encode('utf8'), hashlib.sha256).digest()
 
-def get_aws_signature(url, method, signed_headers, secret_key, date, service='s3', region='us-east-1', sha256='', recv_sig=None):
+def get_aws_signature(path, query_string, method, signed_headers, secret_key, date, service='s3', region='us-east-1', sha256='', recv_sig=None):
     datestamp = date.strftime('%Y%m%d')
     amzdate = date.strftime('%Y%m%dT%H%M%SZ')
 
-    parsed_url = urlsplit(url)
-
     canonical_q = []
-    for q in parsed_url.query.strip().split('&'):
+    for q in query_string.strip().split('&'):
         if q and '=' not in q:
             q += '='
         canonical_q.append(q)
     canonical_q.sort()
     canonical_q = '&'.join(canonical_q)
-    path = quote(parsed_url.path)
+    path = quote(path)
     if path == '//':
         path = '/'
 

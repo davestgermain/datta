@@ -10,10 +10,10 @@ import atexit
 class VhostQuart(Quart):
     def request_context(self, _request: Request) -> RequestContext:
         if self.config['SERVER_NAME'] and not _request.host.startswith(self.config['SERVER_NAME']):
-            print(_request.host, self.config)
             # this is a wildcard request
             try:
                 bucket, host = _request.host.split('.', 1)
+                _request.original_path = _request.path
                 url = '/%s%s' % (bucket, _request.path)
                 _request.path = url
             except ValueError:

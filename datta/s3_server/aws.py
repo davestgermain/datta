@@ -80,7 +80,7 @@ def make_contents(fs, iterator, bucket_prefix, maxkeys=1000, versions=False, del
     '''.format(key=key, size=row.get('length') or 0, created=created, modified=modified, etag=etag, owner=owner)
             contents.append(doc)
             if versions:
-                contents.append('<VersionID>{rev}</VersionID>'.format(rev=row.rev))
+                contents.append('<VersionId>{rev}/{etag}</VersionId>'.format(rev=row.rev, etag=etag))
                 if row.rev == latest_rev:
                     contents.append('<IsLatest>true</IsLatest>')
                 contents.append('</Version>')
@@ -162,6 +162,8 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
         <Marker>%s</Marker>
 ''' % (element, bucket, prefix, maxkeys, delimiter, marker or '')
 
+    if versions:
+        preamble += '<VersionIdMarker></VersionIdMarker>'
 
     bucket_prefix = '/%s/' % bucket
 
