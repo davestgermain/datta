@@ -16,8 +16,9 @@ class VhostQuart(Quart):
                 _request.original_path = _request.path
                 url = '/%s%s' % (bucket, _request.path)
                 _request.path = url
-                app.logger.debug('request_context', url, _request.host)
-            except ValueError:
+                app.logger.debug('request_context %s, %s', url, _request.host)
+                _request.headers['host'] = host
+            except:
                 app.logger.exception('bad vhost')
         return super().request_context(_request)
         
