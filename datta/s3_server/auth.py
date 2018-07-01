@@ -95,6 +95,12 @@ def user_from_request(fs, request):
                     # 20180517T030056Z
                     date = datetime.strptime(headers['x-amz-date'], "%Y%m%dT%H%M%SZ")
                     # assert (datetime.utcnow() - date).seconds <= 300
+                    # the subdomain bucket handling code in __init__.py rewrites the path and host.
+                    # but signatures are computed based on the original path 
+                    path = getattr(request, 'original_path', request.path)
+                    host = headers.get('original_host')
+                    if host:
+                        headers['host'] = host
                     try:
                         if 'expect;' in auth_header:
                             # nginx strips expect headers, so we have to add it
@@ -107,9 +113,6 @@ def user_from_request(fs, request):
                     secret_key = user['secret_key']
                     signature = SIG_RE.search(auth_header).group(1)
 
-                    # the subdomain bucket handling code in __init__.py rewrites the path.
-                    # but signatures are computed based on the original path 
-                    path = getattr(request, 'original_path', request.path)
                     valid = get_aws_signature(path,
                                               request.query_string,
                                               request.method,
