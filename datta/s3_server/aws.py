@@ -10,17 +10,33 @@ async def read_request(request, write_buf):
     """
     Reads a chunked AWS request, and writes into write_buf
     """
-    if request.headers.get('x-amz-content-sha256') == 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD':        
-        async for chunk in request.data:
-            cline, body = body.split(b'\r\n', 1)
-            size, sig = cline.split(b';')
-            size = int(size, 16)
-            if size == 0:
-                break
-            write_buf.write(body[:size])
-            # await write_async(write_buf, body[:size])
-            # chunk ends with \r\n
-            body = body[size + 2:]
+    if request.headers.get('x-amz-content-sha256') == 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD':
+        rbuf = b''
+        looking_for_chunk = True
+        try:
+            async for chunk in request.body:
+                if looking_for_chunk:
+                    cline, body = chunk.split(b'\r\n', 1)
+                    size, sig = cline.split(b';')
+                    size = int(size, 16)
+                    rbuf += body
+                    if size == 0:
+                        break
+                    looking_for_chunk = False
+                else:
+                    rbuf += chunk
+                if len(rbuf) >= size:
+                    write_buf.write(rbuf[:size])
+                    # await write_async(write_buf, body[:size])
+                    # chunk ends with \r\n
+                    rbuf = rbuf[size + 2:]
+                    looking_for_chunk = True
+            if rbuf:
+                write_buf.write(rbuf)
+        except:
+            from quart import current_app
+            current_app.logger.exception('read_request')
+            return
     else:
         await write_async(write_buf, await request.get_data())
 
