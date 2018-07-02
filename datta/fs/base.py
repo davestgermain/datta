@@ -8,7 +8,7 @@ from tempfile import SpooledTemporaryFile
 import datetime, time
 from collections import namedtuple
 import six
-from datta.pack import Record
+from datta.pack import Record, make_record_class
 
 try:
     PermissionError = PermissionError
@@ -32,6 +32,8 @@ except AttributeError:
     abc.ABC = ABC
 
 Perm = namedtuple('Perm', ['read', 'write', 'delete', 'ALL'])(read=u'r', write=u'w', delete=u'd', ALL=u'rwd')
+
+FileConfig = make_record_class('FileConfig', [('config', dict)])
 
 class Owner:
     ALL = u'*'
@@ -305,19 +307,19 @@ class BaseManager(abc.ABC):
                 with self.open(configpath, owner=Owner.ROOT) as fp:
                     data = fp.read()
                     if data:
-                        return Record.from_bytes(data)
+                        return FileConfig.from_bytes(data).config
             except FileNotFoundError:
                 if create:
                     self.set_path_config(path, kwargs)
-        return Record.from_dict(kwargs)
+        return FileConfig(kwargs)
 
     def set_path_config(self, path, config):
         """
         
         """
         configpath = u'/'.join(path.split(u'/')[:2])
-        if not isinstance(config, Record):
-            config = Record.from_dict(config)
+        if not isinstance(config, FileConfig):
+            config = FileConfig(config)
         with self.open(configpath, mode=Perm.write, owner=Owner.ROOT) as fp:
             fp.content_type = u'application/x-directory'
             fp.write(config.to_bytes())

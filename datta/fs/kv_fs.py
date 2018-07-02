@@ -1,4 +1,4 @@
-from .base import BaseManager, Record, PermissionError, Perm, Owner, VersionedFile
+from .base import BaseManager, PermissionError, Perm, Owner, VersionedFile
 import os, os.path
 import hashlib
 import time, datetime
@@ -6,14 +6,14 @@ import six
 import uuid
 import operator
 import collections
+from datta.pack import make_record_class, Record
 
 now = datetime.datetime.utcnow
 
 OP_DELETED = 1
 
 
-class HistoryInfo(Record):
-    fields = [
+HistoryInfo = make_record_class('HistoryInfo', [
         ('path', str),
         ('owner', str),
         ('content_type', str),
@@ -23,21 +23,28 @@ class HistoryInfo(Record):
         ('bs', int),
         ('meta', dict),
         ('data', bytes)
-    ]
+    ])
 
 
-class FileInfo(Record):
-    fields = [
+FileInfo = make_record_class('FileInfo', [
         ('rev', int),
         ('created', datetime.datetime),
         ('modified', datetime.datetime),
         ('path', str),
         ('history_key', 'key'),
         ('flag', int),
-    ]
+    ], version=1)
 
-class ListInfo(Record):
-    fields = [
+orig_from_tuple = FileInfo.from_tuple
+@classmethod
+def from_version_1(cls, data, version=1):
+    if len(data) < 6:
+        data = list(data) + [None, None]
+    return orig_from_tuple(data, version=version)
+FileInfo.from_tuple = from_version_1
+
+
+ListInfo = make_record_class('ListInfo', [
         ('path', str),
         ('owner', str),
         ('content_type', str),
@@ -50,31 +57,31 @@ class ListInfo(Record):
         ('modified', datetime.datetime),
         ('history_key', 'key'),
         ('flag', int),
-    ]
+    ])
 
-class KVRecord(Record):
-    fields = [
+
+KVRecord = make_record_class('KVRecord', [
         ('value', None)
-    ]
+    ])
 
-class ACLRecord(Record):
-    fields = [
+
+ACLRecord = make_record_class('ACLRecord', [
         ('acl', dict)
-    ]
-    @classmethod
-    def from_dict(cls, info, version=1):
-        if version != 0:
-            obj = Record.from_dict(cls, info, version=version)
-        else:
-            obj = cls()
-            obj.acl = info
-        return obj
+    ])
 
 
-class RepoStatus(Record):
-    fields = [
+def convert_old_acl(cls, info, version=1):
+    if version != 0:
+        obj = Record.from_dict(cls, info, version=version)
+    else:
+        obj = cls(info)
+    return obj
+ACLRecord.from_dict = classmethod(convert_old_acl)
+
+
+RepoStatus = make_record_class('RepoStatus', [
         ('rev', int)
-    ]
+    ])
 
 
 class BaseKVFSManager(BaseManager):
@@ -152,7 +159,7 @@ class BaseKVFSManager(BaseManager):
                 active.history_key = self.make_history_key(path)
 
             hist = self._get_history_for_rev(tr, path, active.history_key, rev)
-        combined = ListInfo() + hist + active
+        combined = ListInfo.from_records(hist, active)
         combined.rev = hist.get('rev')
         return combined
 
@@ -175,7 +182,7 @@ class BaseKVFSManager(BaseManager):
             hasher = None
         meta[u'bs'] = self._get_chunksize(meta)
 
-        active_info = FileInfo(created=created, modified=modified)
+        active_info = FileInfo.from_dict({'created': created, 'modified': modified})
         with self._begin(write=True) as tr:
             # first, get the active info
             old_info = meta[u'file_info']
@@ -207,8 +214,8 @@ class BaseKVFSManager(BaseManager):
 
             active_info.history_key = hist_key
             active_info.rev = rev
-            hist = HistoryInfo(**meta)
-            hist.created = modified
+            meta['created'] = modified
+            hist = HistoryInfo.from_dict(meta)
             written = 0
             if hist.length <= 1000:
                 data = buf.read()
@@ -337,10 +344,7 @@ class BaseKVFSManager(BaseManager):
                         finfo.history_key = self.make_history_key(path)
 
                     hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
-                    meta = ListInfo()
-                    if hist is not None:
-                        meta += hist
-                    meta += finfo
+                    meta = ListInfo.from_records(hist, finfo)
                     meta.path = path
                     yield meta
                 if limit:
@@ -383,9 +387,9 @@ class BaseKVFSManager(BaseManager):
             from_info.modified = now()
 
             if record_move:
-                hist = HistoryInfo(path=frompath,
-                                 owner=owner,
-                                 meta={u'operation': u'mv', u'dest': topath})
+                hist = HistoryInfo.from_dict({'path': frompath,
+                                             'owner': owner,
+                                             'meta': {u'operation': u'mv', u'dest': topath}})
                 rev = from_info.rev + 1
                 tr[from_info.history_key[rev]] = hist.to_bytes()
                 self._record_repo_history(tr, hist)
@@ -425,11 +429,11 @@ class BaseKVFSManager(BaseManager):
                     created = force_timestamp
                 else:
                     created = now()
-                meta = HistoryInfo(path=path, 
-                                    owner=owner,
-                                    meta={u'operation': u'del'},
-                                    created=created,
-                       )
+                meta = HistoryInfo.from_dict({'path': path, 
+                                            'owner': owner,
+                                            'meta': {u'operation': u'del'},
+                                            'created': created,
+                                        })
                 tr[history_key[rev]] = meta
                 self._record_repo_history(tr, meta)
                 return True
@@ -565,8 +569,7 @@ class BaseKVFSManager(BaseManager):
         sets the data as a msgpack string
         """
         key = self._kv[path]
-        rec = KVRecord()
-        rec.value = data
+        rec = KVRecord(data)
         val = rec.to_bytes()
         with self._begin(write=True) as tr:
             tr[key] = val
@@ -608,8 +611,7 @@ class BaseKVFSManager(BaseManager):
     def set_acl(self, path, acl):
         ppath = self._perm_path(path)
         key = self._perms[ppath]
-        rec = ACLRecord()
-        rec.acl = acl
+        rec = ACLRecord(acl)
         val = rec.to_bytes()
         with self._begin(write=True) as tr:
             if acl:

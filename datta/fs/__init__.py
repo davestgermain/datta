@@ -26,3 +26,4 @@ def get_manager(dsn=None, debug=False, **kwargs):
         MANAGERS[dsn] = importlib.import_module(module).FSManager(dsn, debug=debug, **kwargs)
     return MANAGERS[dsn]
 
+dbopen = get_manager

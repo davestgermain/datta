@@ -4,3 +4,5 @@ lmdb
 msgpack
 whoosh
 python-dateutil
+attrs
+
