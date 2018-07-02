@@ -6,6 +6,7 @@ import six
 import uuid
 import operator
 import collections
+from functools import lru_cache
 from datta.pack import make_record_class, Record
 
 now = datetime.datetime.utcnow
@@ -122,7 +123,7 @@ class BaseKVFSManager(BaseManager):
         return history
 
     def _get_history_for_rev(self, tr, path, history_key, rev):
-        start_key = history_key[rev]
+        start_key = history_key.pack((rev,))
         val = tr[start_key]
         if val:
             hist = HistoryInfo.from_bytes(val)
@@ -265,26 +266,28 @@ class BaseKVFSManager(BaseManager):
             decrypt = cipher['decrypt']
         else:
             decrypt = None
+        startkey = key.pack((rev, 0))
+        endkey = key.pack((rev + 1, ))
         with self._begin(buffers=True) as tr:
-            for i in tr.get_range(key[rev][0], key[rev + 1]):
+            for i in tr.get_range(startkey, endkey):
                 data = i.value
                 if decrypt:
                     data = decrypt(data)
                 yield data
 
     def get_file_chunk(self, file_info, chunk, cipher=None):
-        key = file_info.history_key
-        rev = file_info.rev
+        key = file_info.history_key.pack((file_info.rev, chunk))
         if cipher:
             decrypt = cipher['decrypt']
         else:
             decrypt = None
         with self._begin(buffers=True) as tr:
-            data = tr[key[rev][chunk]]
+            data = tr[key]
             if decrypt:
                 data = decrypt(data)
             return data
-        
+
+    @lru_cache(maxsize=500)
     def _make_file_key(self, path):
         if not isinstance(path, six.text_type):
             path = path.decode('utf8')
@@ -292,7 +295,7 @@ class BaseKVFSManager(BaseManager):
             if path[0] == u'/':
                 path = path[1:]
             path = [p for p in path.split(u'/') if p]
-        return self._files[path]
+        return self._files.pack((path, ))
     
     def _path_hash(self, path):
         return hashlib.sha1(path.encode('utf8')).digest()
@@ -321,7 +324,7 @@ class BaseKVFSManager(BaseManager):
             dirname = nd
         count = 0
         with self._begin(buffers=True) as tr:
-            start = self._make_file_key(dirname).key()[:-1]
+            start = self._make_file_key(dirname)[:-1]
             end = start + b'\xff'
 
             nc = dirname.count(delimiter)
@@ -356,7 +359,7 @@ class BaseKVFSManager(BaseManager):
         if not isinstance(directory, six.text_type):
             directory = directory.decode('utf8')
 
-        start = self._make_file_key(directory).key()[:-1]
+        start = self._make_file_key(directory)[:-1]
         end = start + b'\xff'
         with self._begin(write=True) as tr:
             if include_history:
@@ -510,11 +513,6 @@ class BaseKVFSManager(BaseManager):
         else:
             latest = -1
         return latest
-        # latest = list(tr.get_range(found['range'].start, found['range'].stop, limit=1, reverse=True))[0]
-        # rev = found['key'].unpack(latest.key)[0]
-        # if rev is None:
-        #     rev = -1
-        # return rev
 
     def repo_history(self, repository, since=-1):
         repository = six.text_type(repository)
@@ -545,7 +543,7 @@ class BaseKVFSManager(BaseManager):
         return iterator of open files for every path in the repository,
         for the given version
         """
-        for fp in self.listdir(repository, walk=True, open_files=True, rev=rev):
+        for fp in self.listdir(repository, walk=True, open_files=True, owner=owner, rev=rev):
             yield fp
 
     def __getitem__(self, path):
@@ -553,7 +551,7 @@ class BaseKVFSManager(BaseManager):
         gets the stored data
         """
         with self._begin(buffers=True) as tr:
-            val = tr[self._kv[path]]
+            val = tr[self._kv.pack((path,))]
 
         if val != None:
             try:
@@ -568,7 +566,7 @@ class BaseKVFSManager(BaseManager):
         """
         sets the data as a msgpack string
         """
-        key = self._kv[path]
+        key = self._kv.pack((path,))
         rec = KVRecord(data)
         val = rec.to_bytes()
         with self._begin(write=True) as tr:
@@ -579,7 +577,7 @@ class BaseKVFSManager(BaseManager):
             del tr[self._kv[path]]
 
     def common_prefixes(self, prefix, delimiter):
-        start = self._make_file_key(prefix).key()[:-1]
+        start = self._make_file_key(prefix)[:-1]
         end = start + b'\xff'
 
         nc = prefix.count(delimiter)
@@ -596,11 +594,11 @@ class BaseKVFSManager(BaseManager):
     def get_acl(self, path, tr=None):
         tr = tr or self._begin(buffers=True)
         ppath = self._perm_path(path)
-        basekey = self._perms
+        makekey = self._perms.pack
         acl = None
         with tr:
             while ppath:
-                key = basekey[ppath]
+                key = makekey((ppath,))
                 acl = tr[key]
                 if acl:
                     acl = ACLRecord.from_bytes(acl).acl

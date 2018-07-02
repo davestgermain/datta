@@ -387,12 +387,82 @@ def _pack_maybe_with_versionstamp(t, prefix=None):
 
 
 # packs the specified tuple into a key
-def pack(t, prefix=None):
+def original_pack(t, prefix=None):
     res, version_pos = _pack_maybe_with_versionstamp(t, prefix)
     if version_pos >= 0:
         raise ValueError("Incomplete versionstamp included in vanilla tuple pack")
     return res
 
+def _simple_encode(value, nested=False):
+    if value == None:  # ==, not is, because some fdb.impl.Value are equal to None
+        if nested:
+            return b'\x00\xff'
+        else:
+            return b'\x00'
+    elif isinstance(value, bytes):  # also gets non-None fdb.impl.Value
+        return b'\x01' + value.replace(b'\x00', b'\x00\xFF') + b'\x00'
+    elif isinstance(value, six.text_type):
+        return b'\x02' + value.encode('utf-8').replace(b'\x00', b'\x00\xFF') + b'\x00'
+    elif isinstance(value, six.integer_types) and (not isinstance(value, bool)):
+        if value == 0:
+            return b'\x14'
+        elif value > 0:
+            if value >= _size_limits[-1]:
+                length = (value.bit_length() + 7) // 8
+                data = [b'\x1d', six.int2byte(length)]
+                for i in _range(length - 1, -1, -1):
+                    data.append(six.int2byte((value >> (8 * i)) & 0xff))
+                return b''.join(data)
+
+            n = bisect_left(_size_limits, value)
+            return six.int2byte(INT_ZERO_CODE + n) + struct.pack(">Q", value)[-n:]
+        else:
+            if -value >= _size_limits[-1]:
+                length = (value.bit_length() + 7) // 8
+                value += (1 << (length * 8)) - 1
+                data = [six.int2byte(NEG_INT_START), six.int2byte(length ^ 0xff)]
+                for i in _range(length - 1, -1, -1):
+                    data.append(six.int2byte((value >> (8 * i)) & 0xff))
+                return b''.join(data)
+
+            n = bisect_left(_size_limits, -value)
+            maxv = _size_limits[n]
+            return six.int2byte(INT_ZERO_CODE - n) + struct.pack(">Q", maxv + value)[-n:]
+    elif isinstance(value, (tuple, list)):
+        val = bytearray(b'\x05')
+        for v in value:
+            val += _simple_encode(v, True)
+        val.append(0)
+        return val
+    elif isinstance(value, bool):
+        if value:
+            return b'\x27'
+        else:
+            return b'\x26'
+    elif isinstance(value, ctypes.c_float) or isinstance(value, SingleFloat):
+        return b'\x20' + _float_adjust(struct.pack(">f", value.value), True)
+    elif isinstance(value, ctypes.c_double):
+        return b'\x21' + _float_adjust(struct.pack(">d", value.value), True)
+    elif isinstance(value, float):
+        return b'\x21' + _float_adjust(struct.pack(">d", value), True)
+    elif isinstance(value, uuid.UUID):
+        return b'\x30' + value.bytes
+    else:
+        raise ValueError("Unsupported data type: " + str(type(value)))
+
+
+# packs without caring about versionstamps
+def simple_pack(t, prefix=None):
+    if prefix is not None:
+        bl = bytearray(prefix)
+    else:
+        bl = bytearray()
+    for i in t:
+        bl.extend(_simple_encode(i))
+    return bytes(bl)
+
+pack = simple_pack
+# pack = original_pack
 
 # packs the specified tuple into a key for versionstamp operations
 def pack_with_versionstamp(t, prefix=None):
