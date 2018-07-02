@@ -124,6 +124,19 @@ class Record(object):
                 return True
         return False
 
+    def __add__(self, other):
+        for k in getattr(other, 'fieldnames'):
+            mine = getattr(self, k, None)
+            v = getattr(other, k, None)
+            if mine is None or (v and mine != v):
+                setattr(self, k, v)
+        return self
+
+    def __getattr__(self, attrname):
+        if attrname not in self.fieldnames:
+            raise AttributeError(attrname)
+        return None
+
     def __iter__(self):
         return iter(self.to_tuple())
 
@@ -152,14 +165,17 @@ class Record(object):
             setattr(self, attrname, None)
         return val or default
 
-    def update(self, otherdict):
-        for k, v in otherdict.items():
-            mine = getattr(self, k, None)
-            if mine is None or (v and mine != v):
-                setattr(self, k, v)
+    def update(self, *otherdicts):
+        for otherdict in otherdicts:
+            for k, v in otherdict.items():
+                mine = getattr(self, k, None)
+                if mine is None or (v and mine != v):
+                    setattr(self, k, v)
     
     def items(self):
-        return [(k, getattr(self, k, None)) for k in self.fieldnames]
+        for k in self.fieldnames:
+            yield k, getattr(self, k)
+        # return ((k, getattr(self, k, None)) for k in self.fieldnames)
 
     def to_dict(self):
         if '__dict__' in self.__slots__:
@@ -171,14 +187,13 @@ class Record(object):
         return tuple((getattr(self, n, None) for n in self.__slots__))
 
     def to_bytes(self):
-        return bytes(bytearray(self._version)) + packb(self.to_tuple(), use_bin_type=True)
+        return six.int2byte(self._version) + packb(self.to_tuple(), use_bin_type=True)
 
     __bytes__ = as_foundationdb_value = to_bytes
 
     @classmethod
     def from_tuple(cls, data, version=1):
-        obj = cls(*data, _version=version)
-        return obj
+        return cls(*data, _version=version)
 
     @classmethod
     def from_bytes(cls, data):
@@ -188,14 +203,10 @@ class Record(object):
             version = ord(data[0])
         if version > 10:
             # this is an old object, which is actually a dict
-            val = do_unpack(data)
-            obj = cls.from_dict(val, version=0)
+            return cls.from_dict(do_unpack(data), version=0)
         else:
-            val = do_unpack(data[1:])
-            obj = cls.from_tuple(val, version)
-        return obj
+            return cls.from_tuple(do_unpack(data[1:]), version)
 
     @classmethod
     def from_dict(cls, info, version=1):
-        obj = cls(_version=version, **info)
-        return obj
+        return cls(_version=version, **info)

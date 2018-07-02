@@ -117,18 +117,19 @@ class BaseKVFSManager(BaseManager):
     def _get_history_for_rev(self, tr, path, history_key, rev):
         start_key = history_key[rev]
         val = tr[start_key]
-        if not val:
+        if val:
+            hist = HistoryInfo.from_bytes(val)
+            hist.rev = rev
+            return hist
+        else:
             # files in the repo have different revs
             if self._is_in_repo(tr, path):
                 for lastkey, val in tr.get_range(history_key[0], start_key, reverse=True, values=False):
                     if history_key.contains(lastkey):
                         rev = history_key.unpack(lastkey)[0]
-                        val = tr[history_key[rev]]
-                        break
-        if val:
-            hist = HistoryInfo.from_bytes(val)
-            hist.rev = rev
-            return hist
+                        hist = HistoryInfo.from_bytes(tr[history_key[rev]])
+                        hist.rev = rev
+                        return hist
 
     def get_file_metadata(self, path, rev, tr=None, mode=None):
         if tr is None:
@@ -139,23 +140,20 @@ class BaseKVFSManager(BaseManager):
             if rev is None and not exists:
                 # there is no metadata
                 return {}
-            elif not exists:
-                active = FileInfo()
-            else:
-                active = FileInfo.from_bytes(bytes(active))
-                if active.get('flag') == OP_DELETED and mode != Perm.write:
+            elif exists:
+                active = FileInfo.from_bytes(active)
+                if mode != Perm.write and active.flag == OP_DELETED:
                     return {}
-                rev = active.rev if rev is None else rev
+                rev = active.rev if rev is None else rev            
+            else:
+                active = FileInfo()
 
-            if not getattr(active, 'history_key'):
+            if not active.history_key:
                 active.history_key = self.make_history_key(path)
 
             hist = self._get_history_for_rev(tr, path, active.history_key, rev)
-        combined = ListInfo()
-        if hist:
-            combined.update(hist)
-            combined.update(active)
-            combined.rev = hist.rev
+        combined = ListInfo() + hist + active
+        combined.rev = hist.get('rev')
         return combined
 
     def get_metadata_and_check_perm(self, path, rev, mode=None, owner=None):
@@ -330,19 +328,19 @@ class BaseKVFSManager(BaseManager):
                     yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
                 else:
                     finfo = FileInfo.from_bytes(v)
-                    meta = ListInfo()
-                    if finfo.get('flag') == OP_DELETED:
+                    if finfo.flag == OP_DELETED:
+                        continue
+                    elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
                         continue
 
                     if not finfo.history_key:
                         finfo.history_key = self.make_history_key(path)
 
                     hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
-                    if hist:
-                        meta.update(hist)
-                    meta.update(finfo)
-                    if owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
-                        continue
+                    meta = ListInfo()
+                    if hist is not None:
+                        meta += hist
+                    meta += finfo
                     meta.path = path
                     yield meta
                 if limit:

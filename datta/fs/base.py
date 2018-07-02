@@ -198,9 +198,9 @@ class BaseManager(abc.ABC):
             return True
         acl = self.get_acl(path, tr=tr)
         if acl:
-            if perm in acl.get(owner, []):
+            if perm in acl.get(owner, ()):
                 return True
-            elif perm in acl.get(Owner.ALL, []):
+            elif perm in acl.get(Owner.ALL, ()):
                 return True
         if raise_exception:
             raise PermissionError((path, owner, perm))
@@ -418,9 +418,8 @@ class VersionedFile(io.BufferedIOBase):
         if self._file_info:
             self.update(self._file_info)
 
-        if mode == Perm.read and 'id' not in kwargs:
-            if not self._file_info:
-                raise FileNotFoundError(self.path)
+        if mode == Perm.read and not self._file_info:
+            raise FileNotFoundError(self.path)
         elif mode == Perm.write:
             self.owner = requestor 
 
