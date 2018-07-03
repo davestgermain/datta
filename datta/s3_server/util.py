@@ -87,8 +87,7 @@ def good_response(fileobj, headers=None):
     if status >= 200 and (fileobj.length >= 65535 and (to_read == -1 or to_read >= 65535)):
         if to_read == -1:
             to_read = fileobj.length
-        async def iterator():
-            nonlocal to_read
+        async def iterator(to_read):
             blocksize = getattr(fileobj, 'bs', 8192)
             # blocksize = 16384
             with fileobj:
@@ -99,7 +98,7 @@ def good_response(fileobj, headers=None):
                         to_read -= len(chunk)
                     else:
                         break
-        return Response(iterator(), status=status, headers=headers, content_type=content_type)
+        return Response(iterator(to_read), status=status, headers=headers, content_type=content_type)
     else:
         if to_read:
             with fileobj:

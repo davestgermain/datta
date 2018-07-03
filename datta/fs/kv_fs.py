@@ -43,6 +43,7 @@ def from_version_1(cls, data, version=1):
         data = list(data) + [None, None]
     return orig_from_tuple(data, version=version)
 FileInfo.from_tuple = from_version_1
+FileInfo.from_bytes = lru_cache(maxsize=128)(FileInfo.from_bytes)
 
 
 ListInfo = make_record_class('ListInfo', [
@@ -78,6 +79,7 @@ def convert_old_acl(cls, info, version=1):
         obj = cls(info)
     return obj
 ACLRecord.from_dict = classmethod(convert_old_acl)
+ACLRecord.from_bytes = lru_cache(maxsize=200)(ACLRecord.from_bytes)
 
 
 RepoStatus = make_record_class('RepoStatus', [
@@ -154,7 +156,7 @@ class BaseKVFSManager(BaseManager):
                     return {}
                 rev = active.rev if rev is None else rev            
             else:
-                active = FileInfo()
+                active = FileInfo.from_dict({})
 
             if not active.history_key:
                 active.history_key = self.make_history_key(path)
@@ -184,14 +186,14 @@ class BaseKVFSManager(BaseManager):
         meta[u'bs'] = self._get_chunksize(meta)
 
         active_info = FileInfo.from_dict({'created': created, 'modified': modified})
+        # first, get the active info
+        old_info = meta.pop(u'file_info', None)
+        if old_info:
+            hist_key = old_info.history_key
+        if not hist_key:
+            hist_key = self._history[uuid.uuid4().bytes]
+        active_info.history_key = hist_key    
         with self._begin(write=True) as tr:
-            # first, get the active info
-            old_info = meta[u'file_info']
-            if old_info:
-                hist_key = old_info.history_key
-            if not hist_key:
-                hist_key = self._history[uuid.uuid4().bytes]
-
             found = self._is_in_repo(tr, path)
             if rev is None or found:
                 if found:
@@ -213,9 +215,8 @@ class BaseKVFSManager(BaseManager):
                         rev = 0
                 meta[u'rev'] = rev
 
-            active_info.history_key = hist_key
             active_info.rev = rev
-            meta['created'] = modified
+            meta[u'created'] = modified
             hist = HistoryInfo.from_dict(meta)
             written = 0
             if hist.length <= 1000:
@@ -315,7 +316,7 @@ class BaseKVFSManager(BaseManager):
                 return val.get('flag') != OP_DELETED
         return False
 
-    def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, delimiter='/', rev=None, **kwargs):
+    def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, delimiter=u'/', rev=None, start_file=None, **kwargs):
         if delimiter:
             nd = os.path.normpath(dirname)
             if dirname.endswith(delimiter) and not nd.endswith(delimiter):
@@ -326,7 +327,8 @@ class BaseKVFSManager(BaseManager):
         with self._begin(buffers=True) as tr:
             start = self._make_file_key(dirname)[:-1]
             end = start + b'\xff'
-
+            if start_file:
+                start = self._make_file_key(start_file)
             nc = dirname.count(delimiter)
             for k, v in tr.get_range(start, end):
                 k = self._files.unpack(k)[0]
