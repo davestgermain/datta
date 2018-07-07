@@ -77,7 +77,7 @@ class TransactionalEnvironment(object):
                     if reverse and key > start:
                         continue
                     if comparator(key, end):
-                        break                
+                        break
                     if not do_clear:
                         yield KeyValue(key, value)
                     else:

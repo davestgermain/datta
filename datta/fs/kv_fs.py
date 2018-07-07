@@ -6,6 +6,7 @@ import six
 import uuid
 import operator
 import collections
+from contextlib import closing
 from functools import lru_cache
 from datta.pack import make_record_class, Record
 
@@ -79,7 +80,7 @@ def convert_old_acl(cls, info, version=1):
         obj = cls(info)
     return obj
 ACLRecord.from_dict = classmethod(convert_old_acl)
-ACLRecord.from_bytes = lru_cache(maxsize=200)(ACLRecord.from_bytes)
+# ACLRecord.from_bytes = lru_cache(maxsize=200)(ACLRecord.from_bytes)
 
 
 RepoStatus = make_record_class('RepoStatus', [
@@ -113,13 +114,14 @@ class BaseKVFSManager(BaseManager):
                 start = hr.start
                 end = hr.stop
 
-                for k, v in tr.get_range(start, end, reverse=True):
-                    key = hk.unpack(k)
-                    if len(key) > 1:
-                        continue
-                    row = HistoryInfo.from_bytes(v)
-                    row.rev = key[0]
-                    history.append(row)
+                with closing(tr.get_range(start, end, reverse=True)) as kr:
+                    for k, v in kr:
+                        key = hk.unpack(k)
+                        if len(key) > 1:
+                            continue
+                        row = HistoryInfo.from_bytes(v)
+                        row.rev = key[0]
+                        history.append(row)
 
         history.sort(key=operator.attrgetter('rev'), reverse=True)
         return history
@@ -134,12 +136,13 @@ class BaseKVFSManager(BaseManager):
         else:
             # files in the repo have different revs
             if self._is_in_repo(tr, path):
-                for lastkey, val in tr.get_range(history_key[0], start_key, reverse=True, values=False):
-                    if history_key.contains(lastkey):
-                        rev = history_key.unpack(lastkey)[0]
-                        hist = HistoryInfo.from_bytes(tr[history_key[rev]])
-                        hist.rev = rev
-                        return hist
+                with closing(tr.get_range(history_key[0], start_key, reverse=True, values=False)) as kr:
+                    for lastkey, val in kr:
+                        if history_key.contains(lastkey):
+                            rev = history_key.unpack(lastkey)[0]
+                            hist = HistoryInfo.from_bytes(tr[history_key[rev]])
+                            hist.rev = rev
+                            return hist
 
     def get_file_metadata(self, path, rev, tr=None, mode=None):
         if tr is None:
@@ -270,11 +273,12 @@ class BaseKVFSManager(BaseManager):
         startkey = key.pack((rev, 0))
         endkey = key.pack((rev + 1, ))
         with self._begin(buffers=True) as tr:
-            for i in tr.get_range(startkey, endkey):
-                data = i.value
-                if decrypt:
-                    data = decrypt(data)
-                yield data
+            with closing(tr.get_range(startkey, endkey)) as kr:
+                for i in kr:
+                    data = i.value
+                    if decrypt:
+                        data = decrypt(data)
+                    yield data
 
     def get_file_chunk(self, file_info, chunk, cipher=None):
         key = file_info.history_key.pack((file_info.rev, chunk))
@@ -330,32 +334,33 @@ class BaseKVFSManager(BaseManager):
             if start_file:
                 start = self._make_file_key(start_file)
             nc = dirname.count(delimiter)
-            for k, v in tr.get_range(start, end):
-                k = self._files.unpack(k)[0]
-                path = u'/' + u'/'.join(k)
+            with closing(tr.get_range(start, end)) as kr:
+                for k, v in kr:
+                    k = self._files.unpack(k)[0]
+                    path = u'/' + u'/'.join(k)
 
-                if not walk and path.count(delimiter) > nc:
-                    continue
-                if open_files:
-                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
-                else:
-                    finfo = FileInfo.from_bytes(v)
-                    if finfo.flag == OP_DELETED:
+                    if not walk and path.count(delimiter) > nc:
                         continue
-                    elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
-                        continue
+                    if open_files:
+                        yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
+                    else:
+                        finfo = FileInfo.from_bytes(v)
+                        if finfo.flag == OP_DELETED:
+                            continue
+                        elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
+                            continue
 
-                    if not finfo.history_key:
-                        finfo.history_key = self.make_history_key(path)
+                        if not finfo.history_key:
+                            finfo.history_key = self.make_history_key(path)
 
-                    hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
-                    meta = ListInfo.from_records(hist, finfo)
-                    meta.path = path
-                    yield meta
-                if limit:
-                    count += 1
-                    if count == limit:
-                        break
+                        hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
+                        meta = ListInfo.from_records(hist, finfo)
+                        meta.path = path
+                        yield meta
+                    if limit:
+                        count += 1
+                        if count == limit:
+                            break
 
     def rmtree(self, directory, include_history=False):
         if not isinstance(directory, six.text_type):
@@ -522,15 +527,16 @@ class BaseKVFSManager(BaseManager):
         start = key[since + 1]
         end = key[9223372036854775807]
         with self._begin(buffers=True) as tr:
-            for k, v in tr.get_range(start, end, reverse=True):
-                try:
-                    rev = key.unpack(k)[0]
-                except ValueError:
-                    print('could not unpack', k, v)
-                    break
-                rec = HistoryInfo.from_bytes(v)
-                rec.rev = rev
-                yield rec
+            with closing(tr.get_range(start, end, reverse=True)) as kr:
+                for k, v in kr:
+                    try:
+                        rev = key.unpack(k)[0]
+                    except ValueError:
+                        print('could not unpack', k, v)
+                        break
+                    rec = HistoryInfo.from_bytes(v)
+                    rec.rev = rev
+                    yield rec
 
     def repo_changed_files(self, repository, since=-1):
         seen = set()
@@ -643,7 +649,21 @@ class BaseKVFSManager(BaseManager):
                         print(v.path)
                     else:
                         print(phash)
-    
+
+    def _find_deleted_files(self):
+        hist = self._history
+        files = self._files
+        with self._begin(write=True) as tr:
+            for k, v in tr[files.range()]:
+                up = files.unpack(k)
+                path = '/' + '/'.join(up[0])
+                info = FileInfo.from_bytes(v)
+                if info.flag == OP_DELETED:
+                    history_key = info.history_key or self.make_history_key(path)
+                    del tr[history_key.range()]
+                    del tr[k]
+                    print(path)
+
     def _delete_history_for_paths(self, paths):
         with self._begin(write=True) as tr:
             for path in paths:
@@ -653,8 +673,9 @@ class BaseKVFSManager(BaseManager):
         if tr is None:
             tr = self._begin()
         with tr:
-            for i in tr.get_range(start, stop, **kwargs):
-                yield i
+            with closing(tr.get_range(start, stop, **kwargs)) as kr:
+                for i in kr:
+                    yield i
 
     def _get_key(self, key, tr=None):
         if tr is None:
