@@ -13,8 +13,8 @@ class VhostQuart(Quart):
             # this is a wildcard request
             try:
                 bucket, host = _request.host.split('.', 1)
-                _request.original_path = _request.path
-                _request.headers['original_host'] = _request.host
+                _request.headers['__path'] = _request.path
+                _request.headers['__host'] = _request.host
                 _request.headers['host'] = host
                 url = '/%s%s' % (bucket, _request.path)
                 _request.path = url
@@ -37,15 +37,6 @@ async def setup_routes_and_db():
     app.register_blueprint(admin.bp)
     app.register_blueprint(api.bp)
 
-
-
-@app.before_request
-async def get_user():
-    request.user = auth.user_from_request(app.fs, request)
-    if request.user:
-        request.username = request.user['username']
-    else:
-        request.username = None
 
 
 
@@ -84,7 +75,8 @@ def main():
     #     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
     app.config['FS_DSN'] = args.dsn
-    app.config['MAX_CONTENT_LENGTH'] = 80 * 1024 * 1024
+    app.config['MAX_CONTENT_LENGTH'] = 85 * 1024 * 1024
+    app.config['MAX_CONTENT_LENGTH'] = None
 
     hc = config.Config()
     hc.uvloop = True

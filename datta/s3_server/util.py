@@ -4,27 +4,14 @@ from hashlib import md5
 from xml.etree.ElementTree import fromstring
 from quart import Response, request
 from quart.datastructures import Range, ContentRange
-import itertools
 
-counter = itertools.count()
+async def asynread(fp, size=-1):
+    return fp.read(size)
 
-ERROR_XML = '''<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-  <Code>{code}</Code>
-  <Message>{message}</Message>
-  <Resource>/{bucket}/{key}</Resource> 
-  <RequestId>{request_id}</RequestId>
-</Error>
-'''
 
 def get_etag(data):
     return '"%s"' % md5(data or b'').hexdigest()
 
-async def get_xml():
-    return fromstring((await request.get_data()).decode('utf8'))
-
-async def asynread(fp, size=-1):
-    return fp.read(size)
 
 def good_response(fileobj, headers=None):
     headers = headers or {}
@@ -107,17 +94,4 @@ def good_response(fileobj, headers=None):
         return Response(body, headers=headers, status=status, content_type=content_type)
 
 
-def xml_response(body=None, status=200, iterator=None, **kwargs):
-    if iterator is not None:
-        return Response(iterator(), content_type='text/xml', status=status, **kwargs)
-    else:
-        return Response(body, content_type='text/xml', status=status, **kwargs)
-
-def aws_error_response(status, code, message, bucket='', key=''):
-    request_id = next(counter)
-    message = ERROR_XML.format(**locals())
-    resp = xml_response(message, status=status)
-    # if status in (401, 403):
-    #     resp.headers['WWW-Authenticate'] = 'Basic realm="Auth Required"'
-    return resp
 
