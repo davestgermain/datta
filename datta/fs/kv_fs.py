@@ -80,7 +80,7 @@ def convert_old_acl(cls, info, version=1):
         obj = cls(info)
     return obj
 ACLRecord.from_dict = classmethod(convert_old_acl)
-# ACLRecord.from_bytes = lru_cache(maxsize=200)(ACLRecord.from_bytes)
+ACLRecord.from_bytes = lru_cache(maxsize=500)(ACLRecord.from_bytes)
 
 
 RepoStatus = make_record_class('RepoStatus', [
@@ -624,6 +624,7 @@ class BaseKVFSManager(BaseManager):
                 tr[key] = val
             else:
                 del tr[key]
+        ACLRecord.from_bytes.cache_clear()
 
     def _perm_path(self, path):
         if path[0] == u'/':

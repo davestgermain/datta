@@ -65,7 +65,8 @@ def main():
 
     if args.cert_path:
         import ssl
-        ssl_context = ssl.SSLContext()
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.set_ciphers('ECDHE+AESGCM')
         ssl_context.load_cert_chain(os.path.join(args.cert_path, 'cert.pem'), keyfile=os.path.join(args.cert_path, 'key.pem'))
     else:
         ssl_context = None
