@@ -93,6 +93,16 @@ def main():
         hc.error_logger = hc.access_logger
 
     if args.workers > 1:
+        import signal
+        def _shutdown(num, frame):
+            raise KeyboardInterrupt()
+        signal.signal(signal.SIGTERM, _shutdown)
         run.run_multiple(app, hc, workers=args.workers)
     else:
-        run.run_single(app, hc)
+        try:
+            run.run_single(app, hc)
+        except KeyboardInterrupt:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
