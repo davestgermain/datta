@@ -85,6 +85,7 @@ HEAD_RE = re.compile('SignedHeaders=(.*),')
 
 
 class S3Protocol:
+    INDEX_CACHE = {}
     def __init__(self, fs, request, logger=None):
         self.fs = fs
         self.req = request
@@ -206,6 +207,10 @@ class S3Protocol:
                             yield chunk.encode('utf8')
                     except KeyError:
                         yield self.error_xml(404, 'BucketNotFound', bucket, bucket=bucket).data
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.exception('listdir')
+                        yield self.error_xml(500, repr(e), bucket, bucket=bucket).data
                 return S3Response(iterator())
             else:
                 resp = S3Response(get_website_index(fs, '/%s/' % bucket))
@@ -249,13 +254,22 @@ class S3Protocol:
                         acl['*'].append('w')
                     fs.set_acl(path, acl)
                     headers['Location'] = path
-                    # current_app.logger.info('Created bucket %s', bucket)
+                    try:
+                        del self.INDEX_CACHE[user]
+                    except KeyError:
+                        pass
+                    if self.logger:
+                        self.logger.info('Created bucket %s for %s', bucket, user)
             return S3Response(headers=headers)
         elif self.method == 'DELETE':
             if self.username:
                 path = '/' + bucket
                 if current_app.fs.check_perm(path, self.username, 'd'):
                     current_app.fs.rmtree(path)
+                try:
+                    del self.INDEX_CACHE[self.username]
+                except KeyError:
+                    pass
             return S3Response()
         elif self.method == 'HEAD':
             return S3Response()
@@ -481,23 +495,32 @@ class S3Protocol:
         request = self.req
         user = self.username or ''
         uid = hashlib.md5(user.encode('utf8')).hexdigest()
-        async def stream():
-            list_buckets = '''<?xml version="1.0" encoding="UTF-8"?>
-    <ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-    <Owner>
-        <ID>%s</ID>
-        <DisplayName>%s</DisplayName>
-    </Owner>
-    <Buckets>
-            '''
-            yield (list_buckets % (uid, user)).encode('utf8')
-            for obj in fs.listdir('/'):
-                if obj.content_type == 'application/x-directory':
-                    bucket = obj.path.replace('/', '')
-                    if not bucket.startswith('.') and fs.check_perm(obj.path, user, raise_exception=False):
-                        yield ('<Bucket><Name>%s</Name><CreationDate>%sZ</CreationDate></Bucket>' % (bucket, obj.created.isoformat())).encode('utf8')
-            yield b'</Buckets></ListAllMyBucketsResult>'
-        return S3Response(stream())
+        async def stream(user):
+            if user not in self.INDEX_CACHE:
+                buckets = []
+                list_buckets = '''<?xml version="1.0" encoding="UTF-8"?>
+        <ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+        <Owner>
+            <ID>%s</ID>
+            <DisplayName>%s</DisplayName>
+        </Owner>
+        <Buckets>'''
+                buckets.append((list_buckets % (uid, user)).encode('utf8'))
+                try:
+                    for obj in self.fs.listdir('/', owner=user):
+                        if obj.content_type == 'application/x-directory' and not obj.path.startswith('/.'):
+                            bucket = obj.path.replace('/', '')
+                            buckets.append(('<Bucket><Name>%s</Name><CreationDate>%sZ</CreationDate></Bucket>' % (bucket, obj.created.isoformat())).encode('utf8'))
+                except Exception:
+                    if self.logger:
+                        self.logger.exception('index')
+                buckets.append(b'</Buckets></ListAllMyBucketsResult>')
+                self.INDEX_CACHE[user] = buckets
+            else:
+                buckets = self.INDEX_CACHE[user]
+            for bucket in buckets:
+                yield bucket
+        return S3Response(stream(user))
 
 
 async def write_async(write_buf, chunk):

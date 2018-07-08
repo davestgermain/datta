@@ -334,9 +334,10 @@ class BaseKVFSManager(BaseManager):
             if start_file:
                 start = self._make_file_key(start_file)
             nc = dirname.count(delimiter)
+            unpack = self._files.unpack
             with closing(tr.get_range(start, end)) as kr:
                 for k, v in kr:
-                    k = self._files.unpack(k)[0]
+                    k = unpack(k)[0]
                     path = u'/' + u'/'.join(k)
 
                     if not walk and path.count(delimiter) > nc:
