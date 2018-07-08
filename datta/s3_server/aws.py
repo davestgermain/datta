@@ -29,7 +29,7 @@ async def asynread(fp, size=-1):
 
 class S3Response:
     def __init__(self, data_iter=None, status=200, content_type='text/xml', headers=None):
-        self.data = data_iter or ['']
+        self.data = data_iter or ''
         self.status = status
         self.headers = headers or {}
         self.is_object = False
@@ -147,7 +147,7 @@ class S3Protocol:
     def error_xml(self, status, code, message, bucket='', key=''):
         request_id = next(counter)
         message = ERROR_XML.format(**locals()).encode('utf8')
-        return S3Response([message], status=status)
+        return S3Response(message, status=status)
 
     async def read_from_buf(self, from_buf, to_buf):
         while 1:
@@ -165,7 +165,7 @@ class S3Protocol:
 
             config = fs.get_path_config('/' + bucket)
             if qs in ('location=', 'location'):
-                return S3Response(['<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'])
+                return S3Response('<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
             elif qs == 'policy=':
                 raise NotImplementedError()
             elif 'uploads' in qs:
@@ -177,7 +177,7 @@ class S3Protocol:
                 status = 'Enabled' if config.get('versioning', True) else 'Suspended'
                 vxml = '''<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
                 '''.format(status=status)
-                return S3Response([vxml])
+                return S3Response(vxml)
             elif qs in ('logging', 'logging='):
                 return S3Response()
             elif qs in ('acl=', 'acl'):
@@ -213,7 +213,7 @@ class S3Protocol:
                         yield self.error_xml(500, repr(e), bucket, bucket=bucket).data
                 return S3Response(iterator())
             else:
-                resp = S3Response(get_website_index(fs, '/%s/' % bucket))
+                resp = S3Response(get_website_index(fs, '/%s/' % bucket), content_type='text/html')
                 resp.is_object = True
                 return resp
         elif self.method == 'POST':
@@ -231,7 +231,7 @@ class S3Protocol:
                 resp += '</DeleteResult>'            
             else:
                 resp = ''
-            return S3Response([resp])
+            return S3Response(resp)
         elif self.method == 'PUT':
             user = self.username
 
@@ -302,7 +302,7 @@ class S3Protocol:
                 if self.logger:
                     self.logger.error('DENIED %s user=%s auth=%s', path, owner, request.headers.get('authorization'))
                 return self.error_xml(403, 'AccessDenied', key, bucket=bucket, key=key)
-            resp = S3Response(fp, headers=headers)
+            resp = S3Response(fp, headers=headers, content_type=fp.content_type)
             resp.is_object = True
             return resp
         elif self.method == 'PUT':
@@ -363,7 +363,7 @@ class S3Protocol:
                     ''' % (getattr(fp, 'created', time.time()), headers['Etag'])
             else:
                 resp = ''
-            return S3Response([resp], headers=headers)
+            return S3Response(resp, headers=headers)
         elif self.method == 'DELETE':
             config = fs.get_path_config(path)
             include_history = not config.get('versioning', True)
