@@ -13,6 +13,7 @@ setup(
     setup_requires=['setuptools_scm'],
     packages=packages,
     provides=packages,
+    include_package_data=True,
     description='',
     author='Dave St.Germain',
     author_email='dave@st.germa.in',
