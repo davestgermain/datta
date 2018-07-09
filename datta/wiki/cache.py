@@ -28,7 +28,7 @@ class DBCacheManager(object):
         self._prefix = '/.cache/wiki'
         config = self.fs.get_path_config(self._prefix)
         if config.get('versioning') is None:
-            config.versioning = False
+            config[u'versioning'] = False
             self.fs.set_path_config(self._prefix, config)
             self.fs.set_perm(self._prefix, 'cache', 'rwd')
     

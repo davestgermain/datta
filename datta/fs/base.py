@@ -311,7 +311,7 @@ class BaseManager(abc.ABC):
             except FileNotFoundError:
                 if create:
                     self.set_path_config(path, kwargs)
-        return FileConfig(kwargs)
+        return kwargs
 
     def set_path_config(self, path, config):
         """

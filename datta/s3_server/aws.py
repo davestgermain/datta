@@ -703,7 +703,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
         <MaxKeys>%s</MaxKeys>
         <Delimiter>%s</Delimiter>
         <Marker>%s</Marker>
-''' % (element, bucket, prefix, maxkeys, delimiter, marker or '')
+''' % (element, bucket, prefix, maxkeys, delimiter, escape(marker or ''))
 
     if versions:
         preamble += '<VersionIdMarker></VersionIdMarker>'
@@ -714,7 +714,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
     yield preamble
     yield from contents
     if last_key:
-        yield '<NextContinuationToken>%s</NextContinuationToken>' % last_key
+        yield '<NextContinuationToken>%s</NextContinuationToken>' % escape(last_key)
     yield '<KeyCount>%d</KeyCount><IsTruncated>%s</IsTruncated>' % (count, is_truncated)
 
     if delimiter:
@@ -734,7 +734,7 @@ def list_bucket(fs, bucket, prefix='', maxkeys=1000, delimiter='/', marker=None,
                     yield '<CommonPrefixes><Prefix>%s</Prefix></CommonPrefixes>' % cp
                     last_marker = cp
             yield '<NextContinuationToken>%s</NextContinuationToken>' % next_token
-    yield '<NextMarker>%s</NextMarker>' % last_marker
+    yield '<NextMarker>%s</NextMarker>' % escape(last_marker)
     yield '</%s>' % element
 
 def list_partials(fs, bucket):

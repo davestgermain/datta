@@ -18,8 +18,8 @@ class DBStorage(Storage):
     def create(self):
         self.fs.set_perm(self.prefix, u'*', u'rwd')
         config = self.fs.get_path_config(self.prefix)
-        if config.get('versioning', None) is None:
-            config.versioning = False
+        if config.get(u'versioning', None) is None:
+            config[u'versioning'] = False
             self.fs.set_path_config(self.prefix, config)
 
     def _topath(self, name):
