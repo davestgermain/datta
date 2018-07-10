@@ -7,7 +7,7 @@ class FSManager(BaseKVFSManager):
     TRANSIZE = 1024 * 1024 * 1024
     
     def _setup(self, **kwargs):
-        self.db = TransactionalEnvironment(filename=self.dsn, env_args=kwargs)
+        self.db = TransactionalEnvironment(filename=self.dsn.path, env_args=kwargs)
         self._files = subspace.Subspace((u'fs', ))
         self._history = subspace.Subspace((u'hist', ))
         self._kv = subspace.Subspace((u'kv', ))

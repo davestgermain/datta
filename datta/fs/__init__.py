@@ -2,6 +2,7 @@ import importlib
 import os
 import six
 from .base import Perm
+from urllib.parse import urlsplit
 try:
     from .base import FileNotFoundError
 except ImportError:
@@ -13,14 +14,13 @@ MANAGERS = {}
 
 def get_manager(dsn=None, debug=False, **kwargs):
     if dsn is None:
-        dsn = os.environ.get('FS_DSN', 'fdb')
-    
+        dsn = os.environ.get('FS_DSN', 'lmdb:///tmp/data/')
+    dsn = urlsplit(dsn)
     if dsn not in MANAGERS:
-        if dsn == 'fdb':
+        if dsn.path == 'fdb':
             module = 'datta.fs.fdb_fs'
-        elif dsn.startswith('lmdb://'):
+        elif dsn.scheme == 'lmdb':
             module = 'datta.fs.lmdb_fs'
-            dsn = dsn.replace('lmdb://', '', 1)
         else:
             module = 'datta.fs.cdb_fs'
         MANAGERS[dsn] = importlib.import_module(module).FSManager(dsn, debug=debug, **kwargs)
