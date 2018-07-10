@@ -1,7 +1,6 @@
 from datetime import datetime
 import time
 from hashlib import md5
-from xml.etree.ElementTree import fromstring
 from quart import Response, request
 from quart.datastructures import Range, ContentRange
 

@@ -6,6 +6,7 @@ import codecs
 import re
 from datetime import datetime
 from urllib.parse import urlsplit, quote, unquote
+from xml.etree.ElementTree import fromstring
 
 from html import escape
 import itertools
@@ -21,8 +22,6 @@ ERROR_XML = '''<?xml version="1.0" encoding="UTF-8"?>
 </Error>
 '''
 
-async def get_xml():
-    return fromstring((await request.get_data()).decode('utf8'))
 
 async def asynread(fp, size=-1):
     return fp.read(size)
@@ -93,6 +92,9 @@ class S3Protocol:
         self.username = None
         self.user = None
         self.logger = logger
+
+    async def get_xml(self):
+        return fromstring((await self.req.get_data()).decode('utf8'))
 
     def authenticate(self):
         auth_string = self.req.headers.get('Authorization', '')
@@ -218,7 +220,7 @@ class S3Protocol:
                 return resp
         elif self.method == 'POST':
             if request.query_string == 'delete=':
-                tree = await get_xml()
+                tree = await self.get_xml()
                 keys = [key.text for key in tree.findall('Object/Key')]
                 resp = '<?xml version="1.0" encoding="UTF-8"?>\n<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
                 user = self.username
@@ -404,7 +406,7 @@ class S3Protocol:
             </InitiateMultipartUploadResult>'''.format(bucket=bucket, key=key, uploadid=partial.id)
         elif self.method == 'POST':
             # complete request
-            tree = await get_xml()
+            tree = await self.get_xml()
             try:
                 partial = fs.partial(path, id=upload_id)
             except PermissionError:

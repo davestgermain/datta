@@ -166,7 +166,11 @@ class BaseKVFSManager(BaseManager):
 
             hist = self._get_history_for_rev(tr, path, active.history_key, rev)
         combined = ListInfo.from_records(hist, active)
-        combined.rev = hist.get('rev')
+        try:
+            combined.rev = hist.get('rev')
+        except AttributeError:
+            print('ERROR', path)
+            combined.rev = rev
         return combined
 
     def get_metadata_and_check_perm(self, path, rev, mode=None, owner=None):
@@ -271,7 +275,7 @@ class BaseKVFSManager(BaseManager):
         else:
             decrypt = None
         startkey = key.pack((rev, 0))
-        endkey = key.pack((rev + 1, ))
+        endkey = key.pack((rev, False))
         with self._begin(buffers=True) as tr:
             with closing(tr.get_range(startkey, endkey)) as kr:
                 for i in kr:
@@ -328,40 +332,39 @@ class BaseKVFSManager(BaseManager):
 
             dirname = nd
         count = 0
-        with self._begin(buffers=True) as tr:
-            start = self._make_file_key(dirname)[:-1]
-            end = start + b'\xff'
-            if start_file:
-                start = self._make_file_key(start_file)
-            nc = dirname.count(delimiter)
-            unpack = self._files.unpack
-            with closing(tr.get_range(start, end)) as kr:
-                for k, v in kr:
-                    k = unpack(k)[0]
-                    path = u'/' + u'/'.join(k)
+        start = self._make_file_key(dirname)[:-1]
+        end = start + b'\xff'
+        if start_file:
+            start = self._make_file_key(start_file)
+        nc = dirname.count(delimiter)
+        unpack = self._files.unpack
+        with self._begin(buffers=True) as tr, closing(tr.get_range(start, end)) as kr:
+            for k, v in kr:
+                k = unpack(k)[0]
+                path = u'/' + u'/'.join(k)
 
-                    if not walk and path.count(delimiter) > nc:
+                if not walk and path.count(delimiter) > nc:
+                    continue
+                if open_files:
+                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
+                else:
+                    finfo = FileInfo.from_bytes(v)
+                    if finfo.flag == OP_DELETED:
                         continue
-                    if open_files:
-                        yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
-                    else:
-                        finfo = FileInfo.from_bytes(v)
-                        if finfo.flag == OP_DELETED:
-                            continue
-                        elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
-                            continue
+                    elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
+                        continue
 
-                        if not finfo.history_key:
-                            finfo.history_key = self.make_history_key(path)
+                    if not finfo.history_key:
+                        finfo.history_key = self.make_history_key(path)
 
-                        hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
-                        meta = ListInfo.from_records(hist, finfo)
-                        meta.path = path
-                        yield meta
-                    if limit:
-                        count += 1
-                        if count == limit:
-                            break
+                    hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
+                    meta = ListInfo.from_records(hist, finfo)
+                    meta.path = path
+                    yield meta
+                if limit:
+                    count += 1
+                    if count == limit:
+                        break
 
     def rmtree(self, directory, include_history=False):
         if not isinstance(directory, six.text_type):
@@ -370,15 +373,16 @@ class BaseKVFSManager(BaseManager):
         start = self._make_file_key(directory)[:-1]
         end = start + b'\xff'
         with self._begin(write=True) as tr:
-            if include_history:
-                for i in tr[start:end]:
-                    path = u'/' + u'/'.join(self._files.unpack(i.key)[0])
-                    del tr[i.key]
-                    info = FileInfo.from_bytes(i.value)
-                    hk = info.get('history_key') or self.make_history_key(path)
+            for i in tr[start:end]:
+                info = FileInfo.from_bytes(i.value)
+                info.flag = OP_DELETED
+                tr[i.key] = info
+                if include_history:
+                    hk = info.get('history_key')
+                    if hk is None:
+                        path = u'/' + u'/'.join(self._files.unpack(i.key)[0])
+                        hk = self.make_history_key(path)
                     del tr[hk.range()]
-            else:
-                del tr[start:end]
 
     def rename(self, frompath, topath, owner=u'*', record_move=True):
         frompath = os.path.normpath(frompath)
@@ -431,6 +435,7 @@ class BaseKVFSManager(BaseManager):
                 # delete everything
                 del tr[fk]
                 del tr[history_key.range()]
+                return True
             else:
                 # record the history of deletion
                 info.flag = OP_DELETED
@@ -633,26 +638,42 @@ class BaseKVFSManager(BaseManager):
         path = [p for p in path.split(u'/') if p]
         return path
 
-    def _find_orphaned_history(self):
+    def _find_orphaned_history(self, and_delete=False):
         hist = self._history
         files = self._files
         found = set()
-        with self._begin() as tr:
-            for k, v in tr[files.range()]:
-                up = files.unpack(k)
-                path = '/' + '/'.join(up[0])
-                found.add(self._path_hash(path))
+        paths = []
+        size = 0
+        to_delete = []
+        with self._begin(buffers=True) as tr:
             for k, v in tr[hist.range()]:
                 up = hist.unpack(k)
-                phash = up[0][0]
-                if phash not in found and len(up[1:]) == 1:
+                if len(up) == 2:
                     v = HistoryInfo.from_bytes(v)
-                    if v.path:
-                        print(v.path)
-                    else:
-                        print(phash)
+                    found.add(up[0])
+                    if not tr[self._make_file_key(v.path)]:
+                        paths.append(v.path)
+                        size += v.length or 0
+                        if and_delete:
+                            to_delete.append(k)
+                else:
+                    if up[0] not in found:
+                        print('missing start key for', up)
+                        to_delete.append(k)
+                        size += len(v)
+                        # if up[-1] == 0:
+                        #     print(bytes(v[:100]))
+                    elif and_delete:
+                        to_delete.append(k)
 
-    def _find_deleted_files(self):
+        if to_delete:
+            with self._begin(buffers=True, write=True) as tr:
+                for k in to_delete:
+                    del tr[k]
+        paths.sort()
+        return paths, size
+
+    def _find_deleted_files(self, and_delete=False):
         hist = self._history
         files = self._files
         with self._begin(write=True) as tr:
@@ -661,9 +682,10 @@ class BaseKVFSManager(BaseManager):
                 path = '/' + '/'.join(up[0])
                 info = FileInfo.from_bytes(v)
                 if info.flag == OP_DELETED:
-                    history_key = info.history_key or self.make_history_key(path)
-                    del tr[history_key.range()]
-                    del tr[k]
+                    if and_delete:
+                        history_key = info.history_key or self.make_history_key(path)
+                        del tr[history_key.range()]
+                        del tr[k]
                     print(path)
 
     def _delete_history_for_paths(self, paths):

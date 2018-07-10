@@ -346,6 +346,41 @@ class BaseManager(abc.ABC):
                 }
                 yield info
 
+    def get_total_size(self, path):
+        tot = 0
+        for info in self.get_meta_history(path):
+            tot += info.length or 0
+        return tot
+
+    def verify_integrity(self, dirname):
+        last_path = None
+        try:
+            for p in self.listdir(dirname, walk=True):
+                last_path = p.path
+                revs = [i.rev for i in self.get_meta_history(p.path)]
+                for rev in revs:
+                    p = self.open(last_path, rev=rev, owner=Owner.ROOT)
+                    hashval = hasher = None
+                    for k in ('sha256', 'sha1', 'md5'):
+                        if k in p.meta:
+                            hashval = p.meta[k]
+                            hasher = getattr(hashlib, k)()
+                            break
+                    failed = False
+                    if hasher:
+                        hasher.update(p.read())
+                        found = hasher.hexdigest()
+                        if found != hashval:
+                            failed = (found, hashval)
+                    else:
+                        failed = len(p.read()) != (p.length or 0)
+                    p.close()
+                    if failed:
+                        print('FAILED' if failed else 'OK', p.path, p.rev, failed)
+        except Exception:
+            import traceback; traceback.print_exc()
+            print(last_path)
+
 class Partial:
     """
     Support object for resumable uploads
@@ -391,7 +426,7 @@ class Partial:
                         chunk = p.read()
                         fp.write(chunk)
                         six.print_('wrote %s to %s' % (len(chunk), self.dest))
-        self.manager.rmtree(self.path)
+        self.manager.rmtree(self.path, include_history=True)
         return fp
 
     def list(self):

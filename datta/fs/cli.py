@@ -40,6 +40,9 @@ def main():
     mv_parser.add_argument('frompath', help='from path')
     mv_parser.add_argument('topath', help='to path')
 
+    mkdir_parser = subparsers.add_parser('mkdir', help='make a directory')
+    mkdir_parser.add_argument('path', help='path')
+
     log_parser = subparsers.add_parser('log', help='show history of file')
     # log_parser.add_argument('-r', action='store_true', default=False, dest='recurse', help='recurse')
     log_parser.add_argument('path', help='path')
@@ -50,7 +53,6 @@ def main():
     perm_parser.add_argument('path', help='path')
     perm_parser.add_argument('-u', dest='owner', help='owner')
     perm_parser.add_argument('-p', dest='perm', help='perm')
-    
 
     
     args = parser.parse_args()
@@ -152,6 +154,8 @@ def main():
     elif args.command == 'mv':
         if not man.rename(args.frompath, args.topath):
             return -1
+    elif args.command == 'mkdir':
+        return man.mkdir(args.path, owner=owner)
     elif args.command == 'log':
         row = '{rev:8}\t{length:8}\t{owner:20}\t{created:26}\t{meta}'
         six.print_(row.format(rev='Rev', length='Size', owner='Owner', created='Created', meta='Meta'))
