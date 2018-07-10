@@ -2,7 +2,10 @@ import importlib
 import os
 import six
 from .base import Perm
-from urllib.parse import urlsplit
+try:
+    from urllib.parse import urlsplit
+except ImportError:
+    from urlparse import urlsplit
 try:
     from .base import FileNotFoundError
 except ImportError:
