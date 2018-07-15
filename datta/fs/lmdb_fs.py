@@ -13,6 +13,7 @@ class FSManager(BaseKVFSManager):
         self._kv = subspace.Subspace((u'kv', ))
         self._repos = subspace.Subspace((u'repo', ))
         self._perms = subspace.Subspace((u'perms', ))
+        self._cas = subspace.Subspace((u'V', ))
         self._active_repos = {}
 
     def close(self):
@@ -22,5 +23,5 @@ class FSManager(BaseKVFSManager):
         return self.db.create_transaction(write=write, **kwargs)
 
     def _get_chunksize(self, meta):
-        # return 1080
-        return 524288
+        return 65536
+        # return 524288

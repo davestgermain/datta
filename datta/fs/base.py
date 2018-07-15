@@ -17,8 +17,9 @@ except NameError:
         pass
     class FileNotFoundError(IOError):
         pass
-    class FileError(IOError):
-        pass
+
+class FileError(IOError):
+    pass
 
 try:
     abc.ABC
@@ -51,7 +52,7 @@ class BaseManager(abc.ABC):
         self.set_perm(u'/', Owner.ROOT, Perm.ALL)
 
     def __repr__(self):
-        return '%s.%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn)
+        return '%s.%s(%s)' % (self.__class__.__module__, self.__class__.__name__, self.dsn.geturl())
 
     @abc.abstractmethod
     def _setup(self):

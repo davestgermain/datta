@@ -19,6 +19,7 @@ class TransactionalEnvironment(object):
                                  writemap=env_args.get('writemap', sys.platform != 'darwin'),
                                  meminit=env_args.get('meminit', False),
                                  readahead=env_args.get('readahead', True),
+                                 metasync=env_args.get('metasync', False),
                                  sync=env_args.get('sync', True))
             
         self.env = env
@@ -28,6 +29,9 @@ class TransactionalEnvironment(object):
     def close(self):
         self.env.sync()
         self.env.close()
+
+    def __hash__(self):
+        return hash(self.env.path)
 
     def __enter__(self):
         self.enter_count += 1
@@ -45,6 +49,8 @@ class TransactionalEnvironment(object):
     def create_transaction(self, write=False, buffers=False):
         txn = self.env.begin(write=write, buffers=buffers)
         return TransactionalEnvironment(env=self.env, txn=txn)
+
+    begin = create_transaction
 
     def get_range(self, start, end, reverse=False, limit=None, keys=True, values=True, do_clear=False):
         if hasattr(start, 'key'):
