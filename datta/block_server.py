@@ -220,6 +220,6 @@ class TrioBlockServer(BaseBlockServer):
 
 if __name__ == '__main__':
     import sys
-    server = AsyncioBlockServer(sys.argv[1])
+    server = AsyncioBlockServer(sys.argv[1], host='0.0.0.0')
     server.start()
 
