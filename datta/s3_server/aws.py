@@ -127,7 +127,7 @@ class S3Protocol:
                 signature = SIG_RE.search(auth_string).group(1)
 
                 valid = get_aws_signature(path,
-                                          self.req.query_string,
+                                          self.req.query_string.decode('utf8'),
                                           self.method,
                                           to_sign,
                                           secret_key,
