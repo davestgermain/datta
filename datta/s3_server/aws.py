@@ -166,23 +166,23 @@ class S3Protocol:
             prefix = request.args.get('prefix', '')
 
             config = fs.get_path_config('/' + bucket)
-            if qs in ('location=', 'location'):
+            if qs in (b'location=', b'location'):
                 return S3Response('<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
-            elif qs == 'policy=':
+            elif qs == b'policy=':
                 raise NotImplementedError()
-            elif 'uploads' in qs:
+            elif b'uploads' in qs:
                 path = bucket
                 if prefix:
                     path += '/' + prefix
                 return S3Response(list_partials(fs, path))
-            elif qs in ('versioning', 'versioning='):
+            elif qs in (b'versioning', b'versioning='):
                 status = 'Enabled' if config.get('versioning', True) else 'Suspended'
                 vxml = '''<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>
                 '''.format(status=status)
                 return S3Response(vxml)
-            elif qs in ('logging', 'logging='):
+            elif qs in (b'logging', b'logging='):
                 return S3Response()
-            elif qs in ('acl=', 'acl'):
+            elif qs in (b'acl=', b'acl'):
                 return S3Response(get_acl_response(fs, '/' + bucket, request.username))
 
             delimiter = request.args.get('delimiter', '')
@@ -202,7 +202,7 @@ class S3Protocol:
                                         owner=self.username,
                                         marker=marker,
                                         maxkeys=max_keys,
-                                        versions='versions' in request.query_string)
+                                        versions=b'versions' in request.query_string)
                 async def iterator():
                     try:
                         for chunk in s3iter:
@@ -219,7 +219,7 @@ class S3Protocol:
                 resp.is_object = True
                 return resp
         elif self.method == 'POST':
-            if request.query_string == 'delete=':
+            if request.query_string == b'delete=':
                 tree = await self.get_xml()
                 keys = [key.text for key in tree.findall('Object/Key')]
                 resp = '<?xml version="1.0" encoding="UTF-8"?>\n<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
@@ -241,7 +241,7 @@ class S3Protocol:
             if user:
                 path = '/' + bucket
                 config = fs.get_path_config(path)
-                if request.query_string in ('acl=', 'acl'):
+                if request.query_string in (b'acl=', b'acl'):
                     raise NotImplementedError('setting acls')
             
                 if not config:
@@ -287,7 +287,7 @@ class S3Protocol:
             if 'uploadId' in request.args:
                 return await self.multipart_upload(path)
 
-            if request.query_string in ('acl=', 'acl'):
+            if request.query_string in (b'acl=', b'acl'):
                 return S3Response(get_acl_response(fs, path, self.username))
             headers = {}
 
@@ -310,7 +310,7 @@ class S3Protocol:
         elif self.method == 'PUT':
             if 'uploadId' in request.args:
                 return await self.multipart_upload(path)
-            if request.query_string in ('acl=', 'acl'):
+            if request.query_string in (b'acl=', b'acl'):
                 raise NotImplementedError('setting acls')
 
             # data = request.body or b''

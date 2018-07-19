@@ -74,32 +74,7 @@ ListInfo = make_record_class('ListInfo', [
         ('parent', bytes),  # key that links to previous record of this object
     ])
 
-CasHistoryInfo = make_record_class('CasHistoryInfo', [
-        ('path', str),
-        ('owner', str),
-        ('content_type', str),
-        ('rev', int),
-        ('length', int),
-        ('created', datetime.datetime),
-        ('bs', int),        # block size for data blocks
-        ('ps', int),        # block size for pointer blocks (multiple of the key size)
-        ('root', bytes),    # key for current version of data block
-        ('prev', bytes),    # key for previous version of data block
-        ('parent', bytes),  # key that links to previous record of this object
-        ('meta', dict),
-    ])
 
-CasDir = make_record_class('CasDir', [
-        ('files', dict),
-        ('parent', bytes),
-])
-@classmethod
-def dir_from_key(cls, key, fs):
-    block = fs.cas_readblock(key)
-    info = CasHistoryInfo.from_bytes(block)
-    obj = cls.from_bytes(b''.join(fs.cas_walk_blocks(info.root)))
-    return obj
-CasDir.from_key = dir_from_key
 
 
 KVRecord = make_record_class('KVRecord', [
@@ -130,10 +105,6 @@ RepoStatus = make_record_class('RepoStatus', [
 
 class BaseKVFSManager(BaseManager):
     TRANSIZE = 8 * 1024 * 1024
-    CAS_COMPRESSED = 1
-    CAS_UNCOMPRESSED = 0
-    CAS_KEY_SIZE = 21
-    CAS_POINTER_SIZE = 21504
 
     def _get_chunksize(self, meta):
         return 65536
@@ -172,12 +143,11 @@ class BaseKVFSManager(BaseManager):
 
     def _get_history_for_rev(self, tr, path, history_key, rev):
         if self._is_cas_key(history_key):
-            block = self.cas_readblock(self._cas.unpack(history_key.key())[0], tr=tr)
-            info = CasHistoryInfo.from_bytes(block)
+            info = self.cas.info_from_block(self._cas.unpack(history_key.key())[0], tr=tr)
             while info.rev != rev:
                 if not info.parent:
                     break
-                info = CasHistoryInfo.from_bytes(self.cas_readblock(info.parent, tr=tr))
+                info = self.cas.info_from_block(info.parent, tr=tr)
             return info
         else:
             start_key = history_key.pack((rev,))
@@ -234,52 +204,15 @@ class BaseKVFSManager(BaseManager):
     def _is_cas_key(self, key):
         return self._cas.contains(key.key())
 
-    def cas_opendir(self, dirname, rev=None):
-        assert dirname.endswith('/')
-        d = Directory(self, dirname[:-1])
-        d.load(rev)
-        return d
+    @lru_cache(maxsize=400)
+    def _is_cas_dir(self, path):
+        sp = path.split('/')
+        for i in range(1, len(sp)):
+            tp = '/'.join(sp[:i])
+            info = self.get_file_metadata(tp, None)
+            if info and info.get('content_type', None) == u'application/x-cas-directory':
+                return tp + '/', '/'.join(sp[i:])
 
-    def cas_write_pointers(self, pointer_size, pointer, level, tr=None):
-        refs = bytearray()
-        while pointer:
-            cur_pointer, pointer = pointer[:pointer_size], pointer[pointer_size:]
-            refs += self.cas_writeblock(level, bytes(cur_pointer), tr=tr)
-        if len(refs) > self.CAS_KEY_SIZE:
-            return self.cas_write_pointers(pointer_size, refs, level + 1, tr=tr)
-        else:
-            return bytes(refs), level
-        
-    def cas_save_file(self, meta, buf, hasher=None, tr=None):
-        prev = meta.pop('root', None)
-        meta['created'] = now()
-        hist = CasHistoryInfo.from_dict(meta)
-        if not hist.ps:
-            hist.ps = self.CAS_POINTER_SIZE
-        if not hist.bs:
-            hist.bs = self._get_chunksize(meta)
-        hist.prev = prev
-
-        depth = 0
-        pointers = bytearray()
-
-        with tr:
-            while 1:
-                chunk = buf.read(hist.bs)
-                if not chunk:
-                    break
-                if hasher:
-                    hasher.update(chunk)
-                key = self.cas_writeblock(depth, chunk, tr)
-                pointers += key
-            if len(pointers) > self.CAS_KEY_SIZE:
-                root_hash, level = self.cas_write_pointers(hist.ps, pointers, 1, tr=tr)
-            else:
-                root_hash = bytes(pointers)
-                level = 0
-            hist.root = root_hash
-        return hist, level + 1
-        
     def save_file_data(self, path, meta, buf, cipher=None):
         rev = meta.get(u'rev', None)
         created = meta[u'created'] or now()
@@ -345,7 +278,7 @@ class BaseKVFSManager(BaseManager):
                 if old_info:
                     meta['root'] = old_info.root
                     meta['parent'] = self._cas.unpack(hist_key.key())[0]
-                hist, level = self.cas_save_file(meta, buf, hasher, tr)
+                hist, level = self.cas.save_file(meta, buf, hasher, tr)
             else:
                 hist = HistoryInfo.from_dict(meta)
                 if hist.length <= 1000:
@@ -382,7 +315,7 @@ class BaseKVFSManager(BaseManager):
             val = hist.to_bytes()
 
             if store_as_cas:
-                active_info.history_key = self._cas[self.cas_writeblock(level, val, tr)]
+                active_info.history_key = self._cas[self.cas.writeblock(level, val, tr)]
             else:
                 tr[hist_key[rev]] = val
                 self._record_repo_history(tr, hist)
@@ -393,66 +326,27 @@ class BaseKVFSManager(BaseManager):
             tr[self._make_file_key(path)] = active_info
         return {'rev': rev}
 
-    def cas_writeblock(self, level, block, tr=None):
+    def cas_openfile(self, info_key):
         """
-        Write a block to the Content Addressed Storage area of the keyspace
+        open a file using the key to the info block
         """
-        # sha512 is faster than sha256, but we don't need so many bits
-        csum = hashlib.sha512(block).digest()[:20]
-        hkey = struct.pack('>B20s', level, csum)
-        key = self._cas[hkey]
+        file_info = self.cas.info_from_block(info_key)
+        if file_info:
+            return VersionedFile(self, file_info.path, mode=Perm.read, rev=file_info.rev, file_info=file_info)
+        else:
+            raise FileNotFoundError(info_key)
 
-        tr = tr or self._begin(write=True, buffers=True)
-        with tr:
-            if not tr.get(key):
-                blen = len(block)
-                prefix = self.CAS_UNCOMPRESSED
-                if snappy:
-                    compressed = snappy.compress(block)
-                    if len(compressed) < (blen * .8):
-                        prefix = self.CAS_COMPRESSED
-                        block = compressed
-                tr[key] = struct.pack('b', prefix) + block
-        return hkey
-
-    def cas_readblock(self, key, tr=None, verify=False):
+    @property
+    def cas(self):
         """
-        Read a block from the Content Addressed Storage area
+        Returns a Content Addressable Storage Manager
         """
-        key = bytes(key)
-        tr = tr or self._begin(buffers=True)
-        with tr:
-            block = tr.get(self._cas[key])
-            if block:
-                # print('READBLOCK', key.hex(), len(block))
-                prefix, block = block[0], block[1:]
-                if prefix == self.CAS_COMPRESSED:
-                    block = snappy.decompress(bytes(block))
-                if verify:
-                    level, csum = struct.unpack('>B20s', key)
-                    calc = hashlib.sha512(block).digest()[:20]
-                    if calc != csum:
-                        mess = 'Hash mismatch %s != %s' % (calc, csum)
-                        raise IOError(mess)
-        return block
-
-    def cas_walk_blocks(self, start_key, verify=False):
-        """
-        Walk the block tree, starting from a pointer or data block
-        """
-        with self._begin(buffers=True) as tr:
-            keys = [start_key]
-            while keys:
-                key = keys.pop(0)
-                block = self.cas_readblock(key, tr, verify=verify)
-                depth = key[0]
-                if depth:
-                    # this is a pointer block
-                    while block:
-                        key, block = block[:self.CAS_KEY_SIZE], block[self.CAS_KEY_SIZE:]
-                        keys.append(key)
-                else:
-                    yield block
+        try:
+            man = self._cas_manager
+        except AttributeError:
+            from datta.fs.cas import KVCASManager
+            man = self._cas_manager = KVCASManager(self)
+        return man
 
     def get_file_chunks(self, file_info, cipher=None):
         if cipher:
@@ -461,9 +355,7 @@ class BaseKVFSManager(BaseManager):
             decrypt = None
         if file_info.root:
             # this is a CAS file
-            for block in self.cas_walk_blocks(file_info.root):
-                if decrypt:
-                    block = decrypt(block)
+            for block in self.cas.get_file_chunks(file_info, cipher=cipher):
                 yield block
         else:
             key = file_info.history_key
@@ -485,21 +377,7 @@ class BaseKVFSManager(BaseManager):
             decrypt = None
         with self._begin(buffers=True) as tr:
             if file_info.root:
-                # this is a CAS file
-                # must figure out how to find the offset within the pointers
-                # files ~< 64MB will have only 1 level of pointers
-                depth, chksum = struct.unpack('>B20s', file_info.root)
-                block = self.cas_readblock(bytes(file_info.root), tr=tr)
-                ptr_per_block = int(file_info.ps / self.CAS_KEY_SIZE)
-                ptr_num, offset = divmod(chunk, ptr_per_block)
-                while depth > 1:
-                    depth -= 1
-                    boffset = (depth * ptr_num) * self.CAS_KEY_SIZE
-                    key = bytes(block[boffset:boffset + self.CAS_KEY_SIZE])
-                    block = self.cas_readblock(key, tr=tr)
-                offset *= self.CAS_KEY_SIZE
-                key = bytes(block[offset:offset + self.CAS_KEY_SIZE])
-                data = self.cas_readblock(key, tr)
+                data = self.cas.get_file_chunk(file_info, chunk, cipher=cipher, tr=tr)
             else:
                 key = file_info.history_key.pack((file_info.rev, chunk))
                 data = tr.get(key)
@@ -557,21 +435,22 @@ class BaseKVFSManager(BaseManager):
 
                 if not walk and path.count(delimiter) > nc:
                     continue
+
+                finfo = FileInfo.from_bytes(v)
+                if finfo.flag == OP_DELETED:
+                    continue
+                elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
+                    continue
+
+                if not finfo.history_key:
+                    finfo.history_key = self.make_history_key(path)
+
+                hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
+                meta = ListInfo.from_records(hist, finfo)
+                meta.path = path
                 if open_files:
-                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, rev=rev)
+                    yield VersionedFile(self, path, mode=Perm.read, requestor=owner, file_info=meta)
                 else:
-                    finfo = FileInfo.from_bytes(v)
-                    if finfo.flag == OP_DELETED:
-                        continue
-                    elif owner and not self.check_perm(path, owner=owner, raise_exception=False, tr=tr):
-                        continue
-
-                    if not finfo.history_key:
-                        finfo.history_key = self.make_history_key(path)
-
-                    hist = self._get_history_for_rev(tr, path, finfo.history_key, rev or finfo.rev)
-                    meta = ListInfo.from_records(hist, finfo)
-                    meta.path = path
                     yield meta
                 if limit:
                     count += 1
@@ -665,6 +544,17 @@ class BaseKVFSManager(BaseManager):
                 tr[history_key[rev]] = meta
                 self._record_repo_history(tr, meta)
                 return True
+
+    def open(self, path, mode=Perm.read, owner=Owner.ALL, rev=None):
+        """
+        Open the file at path
+        """
+        path = os.path.normpath(path)
+        icd = self._is_cas_dir(path)
+        if icd:
+            return self.cas.opendir(icd[0], rev=rev).open(icd[1], mode=mode, owner=owner)
+        else:
+            return super().open(path, mode=mode, owner=owner, rev=rev)
 
     def delete_old_versions(self, path, owner=u'*', maxrev=-1):
         path = os.path.normpath(path)
@@ -918,212 +808,5 @@ class BaseKVFSManager(BaseManager):
             tr = self._begin()
         with tr:
             return tr[key]
-
-
-class Directory:
-    """
-    Access methods for Content Addressable Storage
-    use Manager.cas_opendir() to open a directory,
-    then normal file operations from this object
-    """
-    def __init__(self, manager, root, current_dir=None, parent=None):
-        self.root = root
-        self.current_dir = current_dir or root
-        self.parent = parent
-        self.man = manager
-        self.record = None
-        self.my_block = None
-        self.rev = -1
-        self.get_file_chunks = manager.get_file_chunks
-        self.get_file_chunk = manager.get_file_chunk
-
-    def __repr__(self):
-        return 'Directory(%s:%s) -> %s' % (self.current_dir, self.rev, self.root)
-
-    def load(self, rev=None):
-        my_block = None
-        try:
-            if self.parent:
-                fp = self.parent.open(self.current_dir, mode=Perm.read, rev=rev)
-            else:
-                fp = self.man.open(self.root, mode=Perm.read, rev=rev)
-            with fp:
-                record = CasDir.from_bytes(fp.read())
-                rev = fp.rev
-                my_block = fp._file_info.history_key
-                if not self.parent:
-                    # hmm...
-                    my_block = self.man._cas.unpack(my_block.key())[0]
-        except FileNotFoundError:
-            record = CasDir.from_dict({})
-            rev = -1
-        self.record = record
-        self.rev = rev
-        self.my_block = my_block
-
-    def save(self, extra_info=None):
-        if self.parent:
-            fp = self.parent.open(self.current_dir, mode=Perm.write)
-        else:
-            fp = self.man.open(self.root, mode=Perm.write)
-        with fp:
-            fp.content_type = u'application/x-cas-directory'
-            self.record.parent = self.my_block
-            fp.write(self.record.to_bytes())
-            if not self.parent:
-                # root file should be a CAS file
-                fp.meta[u'CAS'] = True
-            # clear old meta info
-            for k in ('comment', 'op', 't'):
-                fp.meta.pop(k, None)
-            if extra_info:
-                fp.meta.update(extra_info)
-        self.load()
-
-    def delete(self, path, owner=u'*', include_history=False, force_timestamp=None):
-        path = self._get_fname(path)
-        try:
-            del self.record.files[path]
-        except KeyError:
-            return False
-        self.save({'op': 'rm', 't': os.path.join(self.root, path)})
-
-    def rename(self, frompath, topath, owner=Owner.ALL, record_move=True):
-        assert topath.startswith(self.root)
-        fname = self._get_fname(frompath)
-        path, filename = os.path.split(topath)
-        assert filename
-        hist = self.record.files.pop(fname, None)
-        if not hist:
-            raise FileNotFoundError(fname)
-        hist = CasHistoryInfo.from_bytes(hist)
-        
-        if path:
-            d = self.chdir(path)
-        else:
-            d = self
-        hist.path = filename
-        d.record.files[filename] = hist.to_bytes()
-        d.save({'op': 'mv', 't': [frompath, topath]})
-
-    def listdir(self, walk=False, owner=None, limit=0, open_files=False):
-        count = 0
-        for name, h in sorted(self.record.files.items()):
-            if open_files:
-                yield self.open(name, owner=owner)
-            else:
-                yield CasHistoryInfo.from_bytes(h)
-            count += 1
-            if limit and limit == count:
-                break
-            if walk and name.endswith('/'):
-                subdir = name
-                for info in self.chdir(subdir).listdir(walk=True, open_files=open_files, owner=owner):
-                    info.path = os.path.join(subdir, info.path)
-                    yield info
-                    count += 1
-                    if limit and limit == count:
-                        break
-
-    def _get_fname(self, path):
-        if path.endswith('/'):
-            fname = path.split('/')[-2] + '/'
-        else:
-            fname = os.path.basename(path)
-        return fname
-
-    def save_file_data(self, path, meta, buf, cipher=None):
-        fname = self._get_fname(path)
-        old_info = meta.pop(u'file_info', None)
-        meta['root'] = old_info.get('root')
-        meta['path'] = fname
-        meta['rev'] = old_info.get('rev', -1) + 1 if old_info else 0
-        meta['parent'] = self.my_block
-        with self.man._begin(write=True) as tr:
-            hist, level = self.man.cas_save_file(meta, buf, None, tr)
-        self.record.files[fname] = hist.to_bytes()
-        # print('SAVED', fname, hist.rev)
-        # to propagate comments up the tree, save them in the file's metadata
-        info = {}
-        for key in ('op', 't', 'comment'):
-            if hist.meta.get(key):
-                info[key] = hist.meta[key]
-        self.save(info)
-
-    def get_file_metadata(self, path, rev):
-        fname = self._get_fname(path)
-        hist = self.record.files.get(fname)
-        if not hist:
-            return {}
-        hist = CasHistoryInfo.from_bytes(hist)
-        if rev is not None and rev != hist.rev:
-            startkey = self.my_block
-            while hist.rev != rev and startkey:
-                try:
-                    record = CasDir.from_key(startkey, self.man)
-                    hist = CasHistoryInfo.from_bytes(record.files[fname])
-                    startkey = record.parent
-                except KeyError:
-                    return {}
-        hist.history_key = self.my_block
-        return hist
-
-    def get_metadata_and_check_perm(self, filename, rev, mode=Perm.read, owner=Owner.ALL):
-        self.man.check_perm(os.path.join(self.current_dir, filename), owner=owner, perm=mode)    
-        return self.get_file_metadata(filename, rev)
-
-    def get_meta_history(self, path):
-        if path is None:
-            # history for entire tree
-            start = self.my_block
-            while start:
-                block = self.man.cas_readblock(start)
-                info = CasHistoryInfo.from_bytes(block)
-                yield info
-                start = info.parent
-        else:
-            fname = self._get_fname(path)
-            hist = self.record.files.get(fname)
-            if hist:
-                hist = CasHistoryInfo.from_bytes(hist)
-                yield hist
-            if self.record.parent:
-                start = self.record.parent
-                while hist.rev > -1:
-                    try:
-                        record = CasDir.from_key(start, self.man)
-                        yield CasHistoryInfo.from_bytes(record.files[fname])
-                        start = record.parent
-                    except KeyError:
-                        break
-
-    def open(self, filename, mode=Perm.read, owner=Owner.ALL, rev=None):
-        if filename.startswith('/'):
-            filename = self._get_fname(filename)
-        elif filename.count('/') > 0 and not filename.endswith('/'):
-            # need to open a directory to this path
-            path, filename = os.path.split(filename)
-            if not filename:
-                # means we're trying to open a subdirectory somewhere
-                path, filename = path.rsplit('/', 1)
-                filename += '/'
-            return self.chdir(path).open(filename, mode=mode, owner=owner, rev=rev)
-        return VersionedFile(self, os.path.join(self.current_dir, filename), mode=mode, rev=rev, requestor=owner)
-
-    def chdir(self, dirname, rev=None):
-        if not dirname.endswith('/'):
-            dirname += '/'
-        if dirname.startswith('/'):
-            dirname = dirname[1:]
-        if dirname.count('/') > 1:
-            # need to open/create subdirectories
-            d = None
-            for subdir in dirname.split('/')[:-1]:
-                d = (d or self).chdir(subdir, rev=rev)
-        else:
-            d = Directory(self.man, self.root, os.path.join(self.current_dir, dirname), parent=self)
-
-            d.load(rev=rev)
-        return d
 
 

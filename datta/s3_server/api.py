@@ -3,6 +3,7 @@ from quart import Blueprint, request, Response, current_app, exceptions
 from quart.json import JSONEncoder
 from .util import good_response
 from . import aws, auth
+import base64
 
 
 bp = Blueprint(__name__, 'datta.s3_server.api')
@@ -99,3 +100,31 @@ async def simple_api(path):
         except PermissionError:
             raise exceptions.Forbidden()
         return Response('')
+
+# the defaults are required to trick the url mapper into sorting this method earlier
+@bp.route('/.cas/<key>', methods=['GET'], defaults={'key': None})
+async def cas_readblock(key):
+    if len(key) == 42:
+        key = bytes.fromhex(key)
+    elif len(key) == 28:
+        key = base64.urlsafe_b64decode(key)
+    if 'walk' in request.args:
+        async def iterator(blocks):
+            for block in blocks:
+                yield block
+        resp = iterator(current_app.fs.cas.walkblocks(key))
+    else:
+        resp = current_app.fs.cas.readblock(key)
+        if resp is None:
+            raise exceptions.NotFound()
+        resp = bytes(resp)
+    return Response(resp, content_type='application/octet-stream')
+
+# the defaults are required to trick the url mapper into sorting this method earlier
+@bp.route('/.cas/<int:level>', methods=['PUT'], defaults={'level': 0})
+async def cas_writeblock(level):
+    assert level < 256
+    block = await request.get_data()
+    assert len(block) < 1024 * 1024
+    key = current_app.fs.cas.writeblock(level, block)
+    return Response(key.hex(), content_type='text/plain')

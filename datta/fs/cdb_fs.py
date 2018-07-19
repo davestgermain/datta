@@ -212,7 +212,7 @@ class FSManager(BaseManager):
             for row in conn.execute(sql):
                 if open_files:
                     data = dict(row)
-                    yield VersionedFile(row.path, conn, mode='r', requestor=owner, **row)
+                    yield VersionedFile(self, row.path, mode='r', requestor=owner)
                 else:
                     if owner and not self.check_perm(row.path, owner=owner, raise_exception=False, tr=conn):
                         continue
