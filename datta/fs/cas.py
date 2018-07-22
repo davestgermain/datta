@@ -5,6 +5,8 @@ import abc
 import datetime
 import struct
 import hashlib
+import os.path
+from functools import lru_cache
 from datta.pack import make_record_class
 from datta.fs.base import Perm, Owner, VersionedFile
 try:
@@ -44,14 +46,14 @@ def dir_from_key(cls, key, fs):
     return obj
 CasDir.from_key = dir_from_key
 
+CAS_COMPRESSED = 1
+CAS_UNCOMPRESSED = 0
+CAS_KEY_SIZE = 21
+CAS_POINTER_SIZE = 21504
+CAS_BLOCKSIZE = 65536
+
 
 class BaseCASManager(abc.ABC):
-    CAS_COMPRESSED = 1
-    CAS_UNCOMPRESSED = 0
-    CAS_KEY_SIZE = 21
-    CAS_POINTER_SIZE = 21504
-    CAS_BLOCKSIZE = 65536
-
     @abc.abstractmethod
     def readblock(self, key, **kwargs):
         pass
@@ -74,7 +76,7 @@ class BaseCASManager(abc.ABC):
             if depth:
                 # this is a pointer block
                 while block:
-                    key, block = block[:self.CAS_KEY_SIZE], block[self.CAS_KEY_SIZE:]
+                    key, block = block[:CAS_KEY_SIZE], block[CAS_KEY_SIZE:]
                     keys.append(key)
             else:
                 if return_keys:
@@ -87,26 +89,17 @@ class BaseCASManager(abc.ABC):
         while pointer:
             cur_pointer, pointer = pointer[:pointer_size], pointer[pointer_size:]
             refs += self.writeblock(level, bytes(cur_pointer), **kwargs)
-        if len(refs) > self.CAS_KEY_SIZE:
+        if len(refs) > CAS_KEY_SIZE:
             return self.writepointers(pointer_size, refs, level + 1, **kwargs)
         else:
             return bytes(refs), level
 
-    def writefile(self, meta, buf, hasher=None, **kwargs):
-        prev = meta.pop('root', None)
-        meta['created'] = now()
-        hist = CasHistoryInfo.from_dict(meta)
-        if not hist.ps:
-            hist.ps = self.CAS_POINTER_SIZE
-        if not hist.bs:
-            hist.bs = self.CAS_BLOCKSIZE
-        hist.prev = prev
-
+    def writefile(self, buf, blocksize=CAS_BLOCKSIZE, pointersize=CAS_POINTER_SIZE, hasher=None, **kwargs):
         depth = 0
         pointers = bytearray()
 
         while 1:
-            chunk = buf.read(hist.bs)
+            chunk = buf.read(blocksize)
             if not chunk:
                 break
             if hasher:
@@ -116,13 +109,41 @@ class BaseCASManager(abc.ABC):
         if not pointers:
             # still should write the zero block
             pointers = self.writeblock(0, b'', **kwargs)
-        if len(pointers) > self.CAS_KEY_SIZE:
-            root_hash, level = self.writepointers(hist.ps, pointers, 1, **kwargs)
+        if len(pointers) > CAS_KEY_SIZE:
+            root_key, level = self.writepointers(pointersize, pointers, 1, **kwargs)
         else:
-            root_hash = bytes(pointers)
+            root_key = bytes(pointers)
             level = 0
-        hist.root = root_hash
-        return hist, level + 1
+        return root_key, level + 1
+
+    def save_file_data(self, path, meta, buf, cipher=None):
+        old_info = meta.pop(u'file_info', None)
+        if old_info:
+            meta['bs'] = old_info.bs
+            meta['ps'] = old_info.ps
+        meta['path'] = path
+        meta['prev'] = old_info.get('root')
+        meta['rev'] = old_info.get('rev', -1) + 1 if old_info else 0
+        if meta['modified']:
+            meta['created'] = meta['modified']
+        if not meta['created']:
+            meta['created'] = now()
+        hash_algo = meta.pop(u'hash', None)
+        if hash_algo:
+            hasher = getattr(hashlib, hash_algo)()
+        else:
+            hasher = None
+        # print(meta)
+        hist = CasHistoryInfo.from_dict(meta)
+        if not hist.ps:
+            hist.ps = CAS_POINTER_SIZE
+        if not hist.bs:
+            hist.bs = CAS_BLOCKSIZE
+
+        hist.root, level = self.writefile(buf, blocksize=hist.bs, pointersize=hist.ps, hasher=hasher)
+        if hasher:
+            hist.meta[hash_algo] = hasher.hexdigest()
+        return hist
 
     def info_from_block(self, key, **kwargs):
         block = self.readblock(key, **kwargs)
@@ -150,7 +171,7 @@ class BaseCASManager(abc.ABC):
         # this is a CAS file
         # must figure out how to find the offset within the pointers
         # files ~< 64MB will have only 1 level of pointers
-        keysize = self.CAS_KEY_SIZE
+        keysize = CAS_KEY_SIZE
         readblock = self.readblock
 
         depth, chksum = struct.unpack('>B20s', file_info.root)
@@ -169,6 +190,9 @@ class BaseCASManager(abc.ABC):
         if cipher:
             data = cipher['decrypt'](data)
         return data
+
+    def _blockkey(self, key):
+        return key
 
 
 class KVCASManager(BaseCASManager):
@@ -191,11 +215,11 @@ class KVCASManager(BaseCASManager):
         with tr:
             if not tr.get(key):
                 blen = len(block)
-                prefix = self.CAS_UNCOMPRESSED
+                prefix = CAS_UNCOMPRESSED
                 if snappy:
                     compressed = snappy.compress(block)
                     if len(compressed) < (blen * .8):
-                        prefix = self.CAS_COMPRESSED
+                        prefix = CAS_COMPRESSED
                         block = compressed
                 tr[key] = struct.pack('b', prefix) + block
         return hkey
@@ -211,7 +235,7 @@ class KVCASManager(BaseCASManager):
             if block:
                 # print('READBLOCK', key.hex(), len(block))
                 prefix, block = block[0], block[1:]
-                if prefix == self.CAS_COMPRESSED:
+                if prefix == CAS_COMPRESSED:
                     block = snappy.decompress(bytes(block))
                 if verify:
                     level, csum = struct.unpack('>B20s', key)
@@ -221,10 +245,10 @@ class KVCASManager(BaseCASManager):
                         raise IOError(mess)
         return block
 
-    def writefile(self, meta, buf, hasher=None, **kwargs):
+    def writefile(self, buf, hasher=None, **kwargs):
         with self.kv._begin(buffers=True, write=True) as tr:
             kwargs['tr'] = tr
-            return BaseCASManager.writefile(self, meta, buf, hasher=hasher, **kwargs)
+            return BaseCASManager.writefile(self, buf, hasher=hasher, **kwargs)
 
     def walkblocks(self, start_key, verify=False, return_keys=False, **kwargs):
         with self.kv._begin(buffers=True) as tr:
@@ -251,6 +275,64 @@ class SyncRemoteManager(BaseCASManager):
         self.addr = addr
         self.sock = None
         self.rfile = self.wfile = None
+        self._record = None
+        self._changed = False
+
+    def load(self, return_file=False):
+        pathname = '%s_%s.vac' % self.addr
+        try:
+            fp = open(pathname, 'rb')
+            if return_file:
+                return fp
+            with fp:
+                return CasDir.from_bytes(fp.read())
+        except FileNotFoundError:
+            if return_file:
+                return None
+            return CasDir.from_dict({})
+
+    def save(self):
+        if self._changed:
+            rec = self.record
+            parent = self.load(return_file=True)
+            if parent:
+                rec.parent, level = self.writefile(parent, blocksize=4096)
+                parent.close()
+                print('SAVED', rec.parent.hex())
+            val = rec.to_bytes()
+            pathname = '%s_%s.vac' % self.addr
+            with open(pathname, 'wb') as fp:
+                fp.write(rec.to_bytes())
+            self._changed = False
+
+    @property
+    def record(self):
+        if self._record is None:
+            self._record = self.load()
+        return self._record
+
+    @record.setter
+    def record(self, rec):
+        self._record = rec
+
+    def save_file_data(self, path, meta, buf, cipher=None):
+        hist = BaseCASManager.save_file_data(self, path, meta, buf, cipher=cipher)
+        dirname, fname = os.path.split(path)
+        if (dirname.count('/') == 0 and fname == '') or dirname in ('/', ''):
+            self.record.files[hist.path] = hist.to_bytes()
+            self._changed = True
+        return hist
+
+    def open(self, filename, mode=Perm.read, owner=Owner.ALL, rev=None):
+        try:
+            hist = CasHistoryInfo.from_bytes(self.record.files[filename])
+        except KeyError:
+            if mode == Perm.read:
+                raise FileNotFoundError(filename)
+            else:
+                hist = CasHistoryInfo.from_dict({'path': filename})
+        hist.history_key = self.record.parent
+        return VersionedFile(self, filename, mode=mode, rev=rev, file_info=hist)
 
     def connect(self, do_ssl=False):
         import socket
@@ -265,6 +347,7 @@ class SyncRemoteManager(BaseCASManager):
         self.wfile = self.sock.makefile('wb')
         print('connected to %s:%s' % self.addr, self.rfile.readline().strip().decode('utf8'))
 
+    @lru_cache(maxsize=256)
     def readblock(self, key, verify=False):
         message = b'R %s\n' % key
         self._send(message)
@@ -293,7 +376,7 @@ class SyncRemoteManager(BaseCASManager):
         self._send(message)
         while 1:
             resp = self.rfile.read(4)
-            if resp == b'':
+            if resp == b'\x00\x00\x00\x00':
                 break
             if resp != b'ERRR':
                 length = struct.unpack('>I', resp)[0]
@@ -301,6 +384,7 @@ class SyncRemoteManager(BaseCASManager):
                 yield block
             else:
                 yield None
+                break
 
     def missing(self, keys):
         missing = []
@@ -331,6 +415,8 @@ class SyncRemoteManager(BaseCASManager):
         self.wfile.flush()
         
     def close(self):
+        if self._record:
+            self.save()
         self._send(b'Q\n')
         self.wfile.close()
         self.rfile.close()
@@ -361,6 +447,7 @@ class Directory:
         self.parent = parent
         self.man = manager
         self.record = None
+        self._recordbytes = None
         self.my_info_block = None
         self.my_data_block = None
         self.rev = -1
@@ -390,11 +477,16 @@ class Directory:
             rev = -1
             my_data_block = None
         self.record = record
+        self._recordbytes = record.to_bytes()
         self.rev = rev
         self.my_info_block = my_block
         self.my_data_block = my_data_block
 
     def save(self, extra_info=None):
+        val = self.record.to_bytes()
+        if val == self._recordbytes:
+            print(self, 'not changed')
+            return
         if self.parent:
             fp = self.parent.open(self.current_dir, mode=Perm.write)
         else:
@@ -402,7 +494,7 @@ class Directory:
         with fp:
             fp.content_type = u'application/x-cas-directory'
             self.record.parent = self.my_info_block
-            fp.write(self.record.to_bytes())
+            fp.write(val)
             if not self.parent:
                 # root file should be a CAS file
                 fp.meta[u'CAS'] = True
@@ -443,14 +535,17 @@ class Directory:
         count = 0
         for name, h in sorted(self.record.files.items()):
             if open_files:
-                yield self.open(name, owner=owner)
+                fp = self.open(name, owner=owner)
+                yield fp
+                last_info = fp.info
             else:
-                yield CasHistoryInfo.from_bytes(h)
+                last_info = CasHistoryInfo.from_bytes(h)
+                yield last_info
             count += 1
             if limit and limit == count:
                 break
-            if walk and name.endswith('/'):
-                subdir = name
+            if walk and last_info.content_type == 'application/x-cas-directory':
+                subdir = os.path.split(name)[1]
                 for info in self.chdir(subdir).listdir(walk=True, open_files=open_files, owner=owner):
                     info.path = os.path.join(subdir, info.path)
                     yield info
@@ -467,12 +562,9 @@ class Directory:
 
     def save_file_data(self, path, meta, buf, cipher=None):
         fname = self._get_fname(path)
-        old_info = meta.pop(u'file_info', None)
-        meta['root'] = old_info.get('root')
         meta['path'] = fname
-        meta['rev'] = old_info.get('rev', -1) + 1 if old_info else 0
         meta['parent'] = self.my_info_block
-        hist, level = self.man.writefile(meta, buf, None)
+        hist = self.man.save_file_data(path, meta, buf, cipher=cipher)
         self.record.files[fname] = hist.to_bytes()
         # print('SAVED', fname, hist.rev)
         # to propagate comments up the tree, save them in the file's metadata
@@ -501,7 +593,13 @@ class Directory:
         return hist
 
     def get_metadata_and_check_perm(self, filename, rev, mode=Perm.read, owner=Owner.ALL):
-        self.man.check_perm(os.path.join(self.current_dir, filename), owner=owner, perm=mode)    
+        try:
+            self.man.check_perm(os.path.join(self.current_dir, filename), owner=owner, perm=mode)
+        except AttributeError as e:
+            pass
+            # import warnings
+            # message = '%r does not have a check_perm method' % self.man
+            # warnings.warn(message)
         return self.get_file_metadata(filename, rev)
 
     def get_meta_history(self, path):
@@ -553,7 +651,7 @@ class Directory:
             for subdir in dirname.split('/')[:-1]:
                 d = (d or self).chdir(subdir, rev=rev)
         else:
-            d = Directory(self.man, self.root, os.path.join(self.current_dir, dirname), parent=self)
+            d = Directory(self.man, self.root, os.path.join(self.current_dir, dirname)[:-1], parent=self)
 
             d.load(rev=rev)
         return d

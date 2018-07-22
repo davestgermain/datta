@@ -717,7 +717,7 @@ class BaseKVFSManager(BaseManager):
                 key = makekey((ppath,))
                 acl = tr[key]
                 if acl:
-                    acl = ACLRecord.from_bytes(acl).acl
+                    acl = ACLRecord.from_bytes(bytes(acl)).acl
                     break
                 ppath.pop(-1)
         return acl

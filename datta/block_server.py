@@ -11,7 +11,7 @@ from datta.fs import dbopen
 
 
 class BaseBlockServer:
-    def __init__(self, dsn, port=10811, host='127.0.0.1'):
+    def __init__(self, dsn, port=10811, host='127.0.0.1', debug=False):
         fs = dbopen(dsn).cas
         for k in ('readblock', 'writeblock', 'walkblocks'):
             setattr(self, k, getattr(fs, k))
@@ -19,9 +19,10 @@ class BaseBlockServer:
         self.host = host
         self.stats = defaultdict(int)
         self.stats['start'] = time.time()
+        self.debug = debug
 
     def get_key(self, line):
-        key = line[1:].strip()
+        key = line[1:-1]
         # print('KEY', key)
         is_hex = len(key) == 42
         if is_hex:
@@ -43,6 +44,8 @@ class BaseBlockServer:
                 resp = resp.hex().encode('utf8')
             self.stats['bytes-sent'] += len(resp)
             self.stats['read'] += 1
+            if self.debug:
+                print('READ %s (%d)' % (key.hex(), len(block)))
             return [resp]
         else:
             # await asyncio.sleep(.5)
@@ -56,24 +59,30 @@ class BaseBlockServer:
         assert bl == size
         key = self.writeblock(level, block)
         self.stats['bytes-recv'] += size
+        if self.debug:
+            print('WRITE %s (%d)' % (key.hex(), bl))
         return [self.make_response(key)]
 
     def handle_T(self, message):
-        key, is_hex = self.get_key(line)
+        key, is_hex = self.get_key(message)
         wrote = False
         for block in self.walkblocks(key):
-            resp = self.make_response(block)
-            if is_hex:
-                resp = resp.hex().encode('utf8')
-            yield resp
-            self.stats['bytes-sent'] += len(resp)
-            wrote = True
+            if block:
+                resp = self.make_response(block)
+                if is_hex:
+                    resp = resp.hex().encode('utf8')
+                yield resp
+                self.stats['bytes-sent'] += len(resp)
+                wrote = True
         if not wrote:
             # await self.sleep(.5)
             yield b'ERRR'
             self.stats['errors'] += 1
         else:
+            yield b'\x00\x00\x00\x00'
             self.stats['read'] += 1
+        if self.debug:
+            print('WALK %s (%s)' % (key.hex(), wrote))
 
     def handle_S(self, message):
         self.stats['uptime'] = time.time() - self.stats['start']
@@ -92,6 +101,8 @@ class BaseBlockServer:
     def welcome(self):
         self.stats['total-conn'] += 1
         self.stats['open-conn'] += 1
+        if self.debug:
+            print('CONNECT %s' % self.stats['open-conn'])
         return b'CAS uptime: %ds\n' % (time.time() - self.stats['start'])
 
     async def get_response(self, message):
@@ -219,7 +230,7 @@ class TrioBlockServer(BaseBlockServer):
         self.stats['open-conn'] -= 1
 
 if __name__ == '__main__':
-    import sys
-    server = AsyncioBlockServer(sys.argv[1], host='')
+    import sys, os
+    server = AsyncioBlockServer(sys.argv[1], host='', debug=os.getenv('DEBUG', '') == 'true')
     server.start()
 

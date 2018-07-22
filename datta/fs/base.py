@@ -482,6 +482,21 @@ class VersionedFile(io.BufferedIOBase):
     def do_hash(self, algo='sha256'):
         self.hash = algo
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc:
+            if self.readable():
+                self.close()
+            else:
+                self._buf.close()
+                self.mode = None
+            import six
+            six.reraise(exc_type, exc, tb)
+        else:
+            self.close()
+
     def close(self):
         if self.closed:
             return
