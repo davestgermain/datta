@@ -108,6 +108,8 @@ async def cas_readblock(key):
         key = bytes.fromhex(key)
     elif len(key) == 28:
         key = base64.urlsafe_b64decode(key)
+    else:
+        raise exceptions.NotFound()
     if 'walk' in request.args:
         async def iterator(blocks):
             for block in blocks:

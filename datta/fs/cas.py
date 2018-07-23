@@ -94,7 +94,7 @@ class BaseCASManager(abc.ABC):
         else:
             return bytes(refs), level
 
-    def writefile(self, buf, blocksize=CAS_BLOCKSIZE, pointersize=CAS_POINTER_SIZE, hasher=None, **kwargs):
+    def writefile(self, buf, blocksize=CAS_BLOCKSIZE, pointersize=CAS_POINTER_SIZE, hasher=None, encrypt=None, **kwargs):
         depth = 0
         pointers = bytearray()
 
@@ -104,6 +104,8 @@ class BaseCASManager(abc.ABC):
                 break
             if hasher:
                 hasher.update(chunk)
+            if encrypt:
+                chunk = encrypt(chunk)
             key = self.writeblock(depth, chunk, **kwargs)
             pointers += key
         if not pointers:
@@ -139,8 +141,8 @@ class BaseCASManager(abc.ABC):
             hist.ps = CAS_POINTER_SIZE
         if not hist.bs:
             hist.bs = CAS_BLOCKSIZE
-
-        hist.root, level = self.writefile(buf, blocksize=hist.bs, pointersize=hist.ps, hasher=hasher)
+        encrypt = cipher['encrypt'] if cipher else None
+        hist.root, level = self.writefile(buf, blocksize=hist.bs, pointersize=hist.ps, hasher=hasher, encrypt=encrypt)
         if hasher:
             hist.meta[hash_algo] = hasher.hexdigest()
         return hist
@@ -150,9 +152,9 @@ class BaseCASManager(abc.ABC):
         if block:
             return CasHistoryInfo.from_bytes(block)
 
-    def opendir(self, dirname, rev=None):
+    def opendir(self, dirname, rev=None, encryption_key=None, auto_save=True):
         assert dirname.endswith('/')
-        d = Directory(self, dirname[:-1])
+        d = Directory(self, dirname[:-1], encryption_key=encryption_key, auto_save=auto_save)
         d.load(rev)
         return d
 
@@ -271,17 +273,17 @@ class KVCASManager(BaseCASManager):
 
 
 class SyncRemoteManager(BaseCASManager):
-    def __init__(self, addr=('127.0.0.1', 10811)):
+    def __init__(self, addr=('127.0.0.1', 10811), save_file=None):
         self.addr = addr
+        self.save_file = save_file or '%s_%s.vac' % self.addr
         self.sock = None
         self.rfile = self.wfile = None
         self._record = None
         self._changed = False
 
     def load(self, return_file=False):
-        pathname = '%s_%s.vac' % self.addr
         try:
-            fp = open(pathname, 'rb')
+            fp = open(self.save_file, 'rb')
             if return_file:
                 return fp
             with fp:
@@ -300,8 +302,7 @@ class SyncRemoteManager(BaseCASManager):
                 parent.close()
                 print('SAVED', rec.parent.hex())
             val = rec.to_bytes()
-            pathname = '%s_%s.vac' % self.addr
-            with open(pathname, 'wb') as fp:
+            with open(self.save_file, 'wb') as fp:
                 fp.write(rec.to_bytes())
             self._changed = False
 
@@ -315,10 +316,9 @@ class SyncRemoteManager(BaseCASManager):
     def record(self, rec):
         self._record = rec
 
-    def save_file_data(self, path, meta, buf, cipher=None):
+    def save_file_data(self, path, meta, buf, cipher=None, subdir=False):
         hist = BaseCASManager.save_file_data(self, path, meta, buf, cipher=cipher)
-        dirname, fname = os.path.split(path)
-        if (dirname.count('/') == 0 and fname == '') or dirname in ('/', ''):
+        if not subdir:
             self.record.files[hist.path] = hist.to_bytes()
             self._changed = True
         return hist
@@ -441,11 +441,13 @@ class Directory:
     use Manager.cas_opendir() to open a directory,
     then normal file operations from this object
     """
-    def __init__(self, manager, root, current_dir=None, parent=None):
+    def __init__(self, manager, root, current_dir=None, parent=None, encryption_key=None, auto_save=True):
         self.root = root
         self.current_dir = current_dir or root
         self.parent = parent
         self.man = manager
+        self.auto_save = auto_save
+        self.encryption_key = encryption_key
         self.record = None
         self._recordbytes = None
         self.my_info_block = None
@@ -465,6 +467,8 @@ class Directory:
             else:
                 fp = self.man.open(self.root, mode=Perm.read, rev=rev)
             with fp:
+                if self.encryption_key:
+                    fp.set_encryption(self.encryption_key)
                 record = CasDir.from_bytes(fp.read())
                 rev = fp.rev
                 my_block = fp._file_info.history_key
@@ -485,13 +489,14 @@ class Directory:
     def save(self, extra_info=None):
         val = self.record.to_bytes()
         if val == self._recordbytes:
-            print(self, 'not changed')
             return
         if self.parent:
             fp = self.parent.open(self.current_dir, mode=Perm.write)
         else:
             fp = self.man.open(self.root, mode=Perm.write)
         with fp:
+            if self.encryption_key:
+                fp.set_encryption(self.encryption_key)
             fp.content_type = u'application/x-cas-directory'
             self.record.parent = self.my_info_block
             fp.write(val)
@@ -511,7 +516,8 @@ class Directory:
             del self.record.files[path]
         except KeyError:
             return False
-        self.save({'op': 'rm', 't': os.path.join(self.root, path)})
+        if self.auto_save:
+            self.save({'op': 'rm', 't': os.path.join(self.root, path)})
 
     def rename(self, frompath, topath, owner=Owner.ALL, record_move=True):
         assert topath.startswith(self.root)
@@ -529,7 +535,8 @@ class Directory:
             d = self
         hist.path = filename
         d.record.files[filename] = hist.to_bytes()
-        d.save({'op': 'mv', 't': [frompath, topath]})
+        if d.auto_save:
+            d.save({'op': 'mv', 't': [frompath, topath]})
 
     def listdir(self, walk=False, owner=None, limit=0, open_files=False):
         count = 0
@@ -561,18 +568,18 @@ class Directory:
         return fname
 
     def save_file_data(self, path, meta, buf, cipher=None):
-        fname = self._get_fname(path)
-        meta['path'] = fname
         meta['parent'] = self.my_info_block
-        hist = self.man.save_file_data(path, meta, buf, cipher=cipher)
-        self.record.files[fname] = hist.to_bytes()
+        path = self._get_fname(path)
+        hist = self.man.save_file_data(path, meta, buf, cipher=cipher, subdir=True)
+        self.record.files[hist.path] = hist.to_bytes()
         # print('SAVED', fname, hist.rev)
         # to propagate comments up the tree, save them in the file's metadata
         info = {}
         for key in ('op', 't', 'comment'):
             if hist.meta.get(key):
                 info[key] = hist.meta[key]
-        self.save(info)
+        if self.auto_save or hist.content_type == 'application/x-cas-directory':
+            self.save(info)
 
     def get_file_metadata(self, path, rev):
         fname = self._get_fname(path)
@@ -640,7 +647,8 @@ class Directory:
             return self.chdir(path).open(filename, mode=mode, owner=owner, rev=rev)
         return VersionedFile(self, os.path.join(self.current_dir, filename), mode=mode, rev=rev, requestor=owner)
 
-    def chdir(self, dirname, rev=None):
+    def chdir(self, dirname, rev=None, encryption_key=None, auto_save=None):
+        auto_save = auto_save if auto_save is not None else self.auto_save
         if not dirname.endswith('/'):
             dirname += '/'
         if dirname.startswith('/'):
@@ -649,10 +657,14 @@ class Directory:
             # need to open/create subdirectories
             d = None
             for subdir in dirname.split('/')[:-1]:
-                d = (d or self).chdir(subdir, rev=rev)
+                d = (d or self).chdir(subdir, rev=rev, auto_save=auto_save)
         else:
-            d = Directory(self.man, self.root, os.path.join(self.current_dir, dirname)[:-1], parent=self)
-
+            d = Directory(self.man,
+                        self.root,
+                        os.path.join(self.current_dir, dirname)[:-1],
+                        parent=self,
+                        encryption_key=encryption_key,
+                        auto_save=auto_save)
             d.load(rev=rev)
         return d
 

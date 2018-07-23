@@ -44,6 +44,7 @@ def main():
     import argparse
     import os.path
     import sys
+    import asyncio
     from hypercorn import config, run
     from quart.logging import create_serving_logger
 
@@ -55,7 +56,8 @@ def main():
     parser.add_argument('-p', type=int, default=8484, help='port', dest='port')
     parser.add_argument('-a', default='127.0.0.1', help='addr', dest='addr')
     parser.add_argument('-w', type=int, help='# of workers', dest='workers', default=1)
-    
+    parser.add_argument('-b', dest='block_server', help='Also run block server at host:port')
+
     args = parser.parse_args()
     
     if args.debug:
@@ -71,9 +73,12 @@ def main():
     else:
         ssl_context = None
 
-    # if 'PyPy' in sys.version:
-    #     import asyncio
-    #     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+    if 'PyPy' not in sys.version:            
+        try:
+            import uvloop
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+        except ImportError:
+            pass
 
     app.config['FS_DSN'] = args.dsn
     app.config['MAX_CONTENT_LENGTH'] = 85 * 1024 * 1024
@@ -91,18 +96,31 @@ def main():
         hc.access_logger = create_serving_logger()
         # hc.access_log_target = '-'
         hc.error_logger = hc.access_logger
+    loop = asyncio.get_event_loop()
+
+    if args.block_server:
+        from datta.block_server import AsyncioBlockServer
+        host, port = args.block_server.split(':')
+        bs = AsyncioBlockServer(args.dsn, host=host, port=port, debug=args.debug)
+        block_server = bs.start(loop=loop, run_loop=False)
+    else:
+        block_server = None
 
     if args.workers > 1:
         import signal
         def _shutdown(num, frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM, _shutdown)
+        if block_server:
+            from concurrent.futures.thread import ThreadPoolExecutor
+            loop.run_in_executor(ThreadPoolExecutor(), loop.run_forever)
         run.run_multiple(app, hc, workers=args.workers)
     else:
         try:
-            run.run_single(app, hc)
+            run.run_single(app, hc, loop=loop)
         except KeyboardInterrupt:
-            import asyncio
-            loop = asyncio.get_event_loop()
+            if block_server:
+                block_server.close()
+                loop.run_until_complete(block_server.wait_closed())
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()

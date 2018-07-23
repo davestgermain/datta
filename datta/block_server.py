@@ -8,6 +8,13 @@ import os.path
 from collections import defaultdict
 from datta.fs import dbopen
 
+if 'PyPy' not in sys.version:
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass
+
 
 
 class BaseBlockServer:
@@ -121,26 +128,24 @@ class BaseBlockServer:
 
 
 class AsyncioBlockServer(BaseBlockServer):
-    def start(self, ssl_certs=None):
+    def start(self, ssl_certs=None, loop=None, run_loop=True):
         ssl_context = self._get_ssl(ssl_certs)
-        if 'PyPy' not in sys.version:            
-            try:
-                import uvloop
-                loop = uvloop.new_event_loop()
-            except ImportError:
-                loop = asyncio.get_event_loop()
-        else:
-            loop = asyncio.get_event_loop()
         self.sleep = asyncio.sleep
+        loop = loop or asyncio.get_event_loop()
         coro = asyncio.start_server(self.handle_client, self.host, self.port, loop=loop, ssl=ssl_context)
+        if self.debug:
+            print('Starting block server on %s:%s' % (self.host, self.port))
         server = loop.run_until_complete(coro)
-        try:
-            loop.run_forever()
-        except KeyboardInterrupt:
-            pass
-        server.close()
-        loop.run_until_complete(server.wait_closed())
-        loop.close()
+        if run_loop:
+            try:
+                loop.run_forever()
+            except KeyboardInterrupt:
+                pass
+            server.close()
+            loop.run_until_complete(server.wait_closed())
+            loop.close()
+        else:
+            return server
 
     async def handle_client(self, reader, writer):
         writer.write(self.welcome())
