@@ -278,7 +278,7 @@ class BaseKVFSManager(BaseManager):
                 if old_info:
                     meta['root'] = old_info.root
                     meta['parent'] = self._cas.unpack(hist_key.key())[0]
-                hist, level = self.cas.save_file(meta, buf, hasher, tr)
+                hist = self.cas.save_file_data(path, meta, buf, hasher=hasher, tr=tr)
             else:
                 hist = HistoryInfo.from_dict(meta)
                 if hist.length <= 1000:
@@ -315,6 +315,7 @@ class BaseKVFSManager(BaseManager):
             val = hist.to_bytes()
 
             if store_as_cas:
+                level = hist.root[0] + 1
                 active_info.history_key = self._cas[self.cas.writeblock(level, val, tr)]
             else:
                 tr[hist_key[rev]] = val

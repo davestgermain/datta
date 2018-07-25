@@ -8,6 +8,7 @@ import hashlib
 import os.path
 from functools import lru_cache
 from datta.pack import make_record_class
+from datta.cache import Cache
 from datta.fs.base import Perm, Owner, VersionedFile
 try:
     import snappy
@@ -118,14 +119,16 @@ class BaseCASManager(abc.ABC):
             level = 0
         return root_key, level + 1
 
-    def save_file_data(self, path, meta, buf, cipher=None):
+    def save_file_data(self, path, meta, buf, cipher=None, hasher=None, **kwargs):
         old_info = meta.pop(u'file_info', None)
         if old_info:
             meta['bs'] = old_info.bs
             meta['ps'] = old_info.ps
+            meta['prev'] = old_info.get('root')
+            meta['rev'] = old_info.get('rev', -1) + 1
+        else:
+            meta['rev'] = 0
         meta['path'] = path
-        meta['prev'] = old_info.get('root')
-        meta['rev'] = old_info.get('rev', -1) + 1 if old_info else 0
         if meta['modified']:
             meta['created'] = meta['modified']
         if not meta['created']:
@@ -142,7 +145,7 @@ class BaseCASManager(abc.ABC):
         if not hist.bs:
             hist.bs = CAS_BLOCKSIZE
         encrypt = cipher['encrypt'] if cipher else None
-        hist.root, level = self.writefile(buf, blocksize=hist.bs, pointersize=hist.ps, hasher=hasher, encrypt=encrypt)
+        hist.root, level = self.writefile(buf, blocksize=hist.bs, pointersize=hist.ps, hasher=hasher, encrypt=encrypt, **kwargs)
         if hasher:
             hist.meta[hash_algo] = hasher.hexdigest()
         return hist
@@ -152,9 +155,9 @@ class BaseCASManager(abc.ABC):
         if block:
             return CasHistoryInfo.from_bytes(block)
 
-    def opendir(self, dirname, rev=None, encryption_key=None, auto_save=True):
+    def opendir(self, dirname, rev=None, encryption_key=None, auto_save=True, owner=None):
         assert dirname.endswith('/')
-        d = Directory(self, dirname[:-1], encryption_key=encryption_key, auto_save=auto_save)
+        d = Directory(self, dirname[:-1], encryption_key=encryption_key, auto_save=auto_save, root_owner=owner)
         d.load(rev)
         return d
 
@@ -199,12 +202,14 @@ class BaseCASManager(abc.ABC):
 
 class KVCASManager(BaseCASManager):
     def __init__(self, kv):
+        BaseCASManager.__init__(self)
         self.kv = kv
         self._basekey = kv._cas
         self.open = kv.open
         self.close = kv.close
+        self.cache = Cache(maxsize=256)
 
-    def writeblock(self, level, block, tr=None):
+    def writeblock(self, level, block, tr=None, **kwargs):
         """
         Write a block to the Content Addressed Storage area of the keyspace
         """
@@ -226,29 +231,33 @@ class KVCASManager(BaseCASManager):
                 tr[key] = struct.pack('b', prefix) + block
         return hkey
 
-    def readblock(self, key, verify=False, tr=None):
+    def readblock(self, key, verify=False, tr=None, **kwargs):
         """
         Read a block from the Content Addressed Storage area
         """
         key = bytes(key)
-        tr = tr or self.kv._begin(buffers=True)
-        with tr:
-            block = tr.get(self._basekey[key])
-            if block:
-                # print('READBLOCK', key.hex(), len(block))
-                prefix, block = block[0], block[1:]
-                if prefix == CAS_COMPRESSED:
-                    block = snappy.decompress(bytes(block))
-                if verify:
-                    level, csum = struct.unpack('>B20s', key)
-                    calc = hashlib.sha512(block).digest()[:20]
-                    if calc != csum:
-                        mess = 'Hash mismatch %s != %s' % (calc, csum)
-                        raise IOError(mess)
+        block = self.cache.get(key)
+        if block is None:
+            tr = tr or self.kv._begin(buffers=True)
+            with tr:
+                block = tr.get(self._basekey[key])
+                if block:
+                    # print('READBLOCK', key.hex(), len(block))
+                    prefix, block = block[0], block[1:]
+                    if prefix == CAS_COMPRESSED:
+                        block = snappy.decompress(bytes(block))
+                    if verify:
+                        level, csum = struct.unpack('>B20s', key)
+                        calc = hashlib.sha512(block).digest()[:20]
+                        if calc != csum:
+                            mess = 'Hash mismatch %s != %s' % (calc, csum)
+                            raise IOError(mess)
+                    self.cache.set(key, block)
         return block
 
-    def writefile(self, buf, hasher=None, **kwargs):
-        with self.kv._begin(buffers=True, write=True) as tr:
+    def writefile(self, buf, hasher=None, tr=None, **kwargs):
+        tr = tr or self.kv._begin(buffers=True, write=True)
+        with tr:
             kwargs['tr'] = tr
             return BaseCASManager.writefile(self, buf, hasher=hasher, **kwargs)
 
@@ -274,12 +283,14 @@ class KVCASManager(BaseCASManager):
 
 class SyncRemoteManager(BaseCASManager):
     def __init__(self, addr=('127.0.0.1', 10811), save_file=None):
+        BaseCASManager.__init__(self)
         self.addr = addr
         self.save_file = save_file or '%s_%s.vac' % self.addr
         self.sock = None
         self.rfile = self.wfile = None
         self._record = None
         self._changed = False
+        self.cache = Cache(maxsize=256)
 
     def load(self, return_file=False):
         try:
@@ -347,19 +358,21 @@ class SyncRemoteManager(BaseCASManager):
         self.wfile = self.sock.makefile('wb')
         print('connected to %s:%s' % self.addr, self.rfile.readline().strip().decode('utf8'))
 
-    @lru_cache(maxsize=256)
     def readblock(self, key, verify=False):
-        message = b'R %s\n' % key
-        self._send(message)
-        resp =  self.rfile.read(4)
-        if resp != b'ERRR':
-            length = struct.unpack('>I', resp)[0]
-            block = self.rfile.read(length)
-            if verify:
-                if hashlib.sha512(block).digest()[:20] != key[1:]:
-                    raise Exception('Bad block!')
-        else:
-            block = None
+        block = self.cache.get(key)
+        if block is None:
+            message = b'R %s\n' % key
+            self._send(message)
+            resp =  self.rfile.read(4)
+            if resp != b'ERRR':
+                length = struct.unpack('>I', resp)[0]
+                block = self.rfile.read(length)
+                if verify:
+                    if hashlib.sha512(block).digest()[:20] != key[1:]:
+                        raise Exception('Bad block!')
+                self.cache.set(key, block)
+            else:
+                block = None
         return block
 
     def writeblock(self, level, block):
@@ -438,10 +451,10 @@ class SyncRemoteManager(BaseCASManager):
 class Directory:
     """
     Access methods for Content Addressable Storage
-    use Manager.cas_opendir() to open a directory,
+    use Manager.cas.opendir() to open a directory,
     then normal file operations from this object
     """
-    def __init__(self, manager, root, current_dir=None, parent=None, encryption_key=None, auto_save=True):
+    def __init__(self, manager, root, current_dir=None, parent=None, encryption_key=None, auto_save=True, root_owner=None):
         self.root = root
         self.current_dir = current_dir or root
         self.parent = parent
@@ -449,6 +462,7 @@ class Directory:
         self.auto_save = auto_save
         self.encryption_key = encryption_key
         self.record = None
+        self.root_owner = root_owner
         self._recordbytes = None
         self.my_info_block = None
         self.my_data_block = None
@@ -465,7 +479,7 @@ class Directory:
             if self.parent:
                 fp = self.parent.open(self.current_dir, mode=Perm.read, rev=rev)
             else:
-                fp = self.man.open(self.root, mode=Perm.read, rev=rev)
+                fp = self.man.open(self.root, mode=Perm.read, rev=rev, owner=self.root_owner)
             with fp:
                 if self.encryption_key:
                     fp.set_encryption(self.encryption_key)
@@ -493,7 +507,7 @@ class Directory:
         if self.parent:
             fp = self.parent.open(self.current_dir, mode=Perm.write)
         else:
-            fp = self.man.open(self.root, mode=Perm.write)
+            fp = self.man.open(self.root, mode=Perm.write, owner=self.root_owner)
         with fp:
             if self.encryption_key:
                 fp.set_encryption(self.encryption_key)
