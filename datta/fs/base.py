@@ -116,7 +116,7 @@ class BaseManager(abc.ABC):
     def listdir(self, dirname, walk=False, owner=None, limit=0, open_files=False, order=None, cols=None, delimiter='/'):
         pass
 
-    def copyfile(self, filename_or_fileobj, topath, content_type=None, owner=None):
+    def copyfile(self, filename_or_fileobj, topath, content_type=None, owner=None, meta=None):
         if isinstance(filename_or_fileobj, six.string_types):
             filename_or_fileobj = open(filename_or_fileobj, 'rb')
         if not content_type and hasattr(filename_or_fileobj, 'name'):
@@ -126,6 +126,8 @@ class BaseManager(abc.ABC):
                 content_type = to_ctype
         with self.open(topath, mode=Perm.write, owner=owner) as tofile:
             tofile.content_type = content_type
+            if meta:
+                tofile.meta.update(meta)
             while 1:
                 data = filename_or_fileobj.read(8192)
                 if not data:

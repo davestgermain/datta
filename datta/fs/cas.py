@@ -43,7 +43,7 @@ CasDir = make_record_class('CasDir', [
 def dir_from_key(cls, key, fs):
     block = fs.cas_readblock(key)
     info = CasHistoryInfo.from_bytes(block)
-    obj = cls.from_bytes(b''.join(fs.cas_walk_blocks(info.root)))
+    obj = cls.from_bytes(b''.join(fs.cas.walkblocks(info.root)))
     return obj
 CasDir.from_key = dir_from_key
 
@@ -76,9 +76,7 @@ class BaseCASManager(abc.ABC):
             depth = key[0]
             if depth:
                 # this is a pointer block
-                while block:
-                    key, block = block[:CAS_KEY_SIZE], block[CAS_KEY_SIZE:]
-                    keys.append(key)
+                keys.extend((block[i:i+CAS_KEY_SIZE] for i in range(0, len(block), CAS_KEY_SIZE)))
             else:
                 if return_keys:
                     yield bytes(key)
@@ -155,6 +153,11 @@ class BaseCASManager(abc.ABC):
         if block:
             return CasHistoryInfo.from_bytes(block)
 
+    def file_from_key(self, key):
+        info = self.info_from_block(key)
+        if info:
+            return VersionedFile(self, info.path, mode=Perm.read, file_info=info)
+
     def opendir(self, dirname, rev=None, encryption_key=None, auto_save=True, owner=None):
         assert dirname.endswith('/')
         d = Directory(self, dirname[:-1], encryption_key=encryption_key, auto_save=auto_save, root_owner=owner)
@@ -178,9 +181,11 @@ class BaseCASManager(abc.ABC):
         # files ~< 64MB will have only 1 level of pointers
         keysize = CAS_KEY_SIZE
         readblock = self.readblock
-
         depth, chksum = struct.unpack('>B20s', file_info.root)
         block = readblock(bytes(file_info.root), **kwargs)
+        if depth == 0:
+            # there's only one block
+            return block
         ptr_per_block = int(file_info.ps / keysize)
         ptr_num, offset = divmod(chunk, ptr_per_block)
         while depth > 1:

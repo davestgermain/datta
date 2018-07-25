@@ -115,6 +115,11 @@ async def cas_readblock(key):
             for block in blocks:
                 yield block
         resp = iterator(current_app.fs.cas.walkblocks(key))
+    elif 'file' in request.args:
+        fp = current_app.fs.cas.file_from_key(key)
+        if not fp:
+            raise exceptions.NotFound()
+        return good_response(fp, download=request.args['file'] == 'download')
     else:
         resp = current_app.fs.cas.readblock(key)
         if resp is None:

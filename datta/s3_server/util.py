@@ -1,5 +1,6 @@
 from datetime import datetime
 import time
+import os.path
 from hashlib import md5
 from quart import Response, request
 from quart.datastructures import Range, ContentRange
@@ -12,14 +13,15 @@ def get_etag(data):
     return '"%s"' % md5(data or b'').hexdigest()
 
 
-def good_response(fileobj, headers=None):
+def good_response(fileobj, headers=None, download=False):
     headers = headers or {}
     content_type = fileobj.content_type or 'application/octet-stream'
     if not isinstance(content_type, str):
         content_type = content_type.decode('utf8')
 
     headers['Content-Type'] = content_type
-    headers['Last-Modified'] = fileobj.modified.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    modified = fileobj.modified or fileobj.created
+    headers['Last-Modified'] = modified.strftime("%a, %d %b %Y %H:%M:%S GMT")
     headers['x-amz-version-id'] = str(fileobj.rev)
     for key, value in fileobj.meta.items():
         if isinstance(value, bytes):
@@ -27,6 +29,8 @@ def good_response(fileobj, headers=None):
         else:
             value = str(value)
         headers['x-amz-meta-%s' % key] = value
+    if download:
+        headers['Content-Disposition'] = 'attachment; filename="%s"' % os.path.basename(fileobj.path)
 
     status = 200
     headers['Accept-Ranges'] = 'bytes'
@@ -47,7 +51,7 @@ def good_response(fileobj, headers=None):
             if_date = request.headers.get('If-Modified-Since', '')
             if if_date:
                 ts = datetime.strptime(if_date, "%a, %d %b %Y %H:%M:%S %Z")
-                if ts >= fileobj.modified:
+                if ts >= modified:
                     status = 304
                     body = b''
                     to_read = 0
