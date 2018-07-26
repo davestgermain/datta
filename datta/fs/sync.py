@@ -7,7 +7,7 @@ import argparse
 
 def sync_one(from_fp, to_fp, encryption_key=None):
     st = os.stat(from_fp.fileno())
-    if to_fp.created and st.st_mtime == to_fp.created.timestamp():
+    if to_fp.created and abs(st.st_mtime - to_fp.created.timestamp()) < .25:
         raise Exception('%s not modified' % to_fp.path)
     to_fp.created = st.st_ctime
     to_fp.modified = st.st_mtime

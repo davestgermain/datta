@@ -229,7 +229,7 @@ class BaseKVFSManager(BaseManager):
 
         active_info = FileInfo.from_dict({'created': created, 'modified': modified})
         # first, get the active info
-        old_info = meta.pop(u'file_info', None)
+        old_info = meta.get(u'file_info', None)
         if old_info:
             hist_key = old_info.history_key
             # setting for storing blocks as CAS vs in the history range

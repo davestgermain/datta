@@ -6,6 +6,7 @@ import datetime
 import struct
 import hashlib
 import os.path
+import traceback
 from functools import lru_cache
 from datta.pack import make_record_class
 from datta.cache import Cache
@@ -41,9 +42,9 @@ CasDir = make_record_class('CasDir', [
 
 @classmethod
 def dir_from_key(cls, key, fs):
-    block = fs.cas_readblock(key)
+    block = fs.readblock(key)
     info = CasHistoryInfo.from_bytes(block)
-    obj = cls.from_bytes(b''.join(fs.cas.walkblocks(info.root)))
+    obj = cls.from_bytes(b''.join(fs.walkblocks(info.root)))
     return obj
 CasDir.from_key = dir_from_key
 
@@ -154,7 +155,11 @@ class BaseCASManager(abc.ABC):
             return CasHistoryInfo.from_bytes(block)
 
     def file_from_key(self, key):
-        info = self.info_from_block(key)
+        try:
+            info = self.info_from_block(key)
+        except:
+            traceback.print_exc()
+            raise IOError('%s not a file' % key)
         if info:
             return VersionedFile(self, info.path, mode=Perm.read, file_info=info)
 
@@ -169,8 +174,14 @@ class BaseCASManager(abc.ABC):
             decrypt = cipher['decrypt']
         else:
             decrypt = None
-        # this is a CAS file
-        for block in self.walkblocks(file_info.root):
+        depth = file_info.root[0]
+        if depth:
+            for block in self.walkblocks(file_info.root):
+                if decrypt:
+                    block = decrypt(block)
+                yield block
+        else:
+            block = self.readblock(file_info.root)
             if decrypt:
                 block = decrypt(block)
             yield block
@@ -222,6 +233,7 @@ class KVCASManager(BaseCASManager):
         csum = hashlib.sha512(block).digest()[:20]
         hkey = struct.pack('>B20s', level, csum)
         key = self._basekey[hkey]
+        self.cache.set(hkey, block)
 
         tr = tr or self.kv._begin(write=True, buffers=True)
         with tr:
@@ -257,7 +269,7 @@ class KVCASManager(BaseCASManager):
                         if calc != csum:
                             mess = 'Hash mismatch %s != %s' % (calc, csum)
                             raise IOError(mess)
-                    self.cache.set(key, block)
+                    self.cache.set(key, bytes(block))
         return block
 
     def writefile(self, buf, hasher=None, tr=None, **kwargs):
@@ -316,7 +328,7 @@ class SyncRemoteManager(BaseCASManager):
             if parent:
                 rec.parent, level = self.writefile(parent, blocksize=4096)
                 parent.close()
-                print('SAVED', rec.parent.hex())
+                # print('SAVED', rec.parent.hex())
             val = rec.to_bytes()
             with open(self.save_file, 'wb') as fp:
                 fp.write(rec.to_bytes())
@@ -387,6 +399,7 @@ class SyncRemoteManager(BaseCASManager):
         length = struct.unpack('>I', self.rfile.read(4))[0]
         key = self.rfile.read(length)
         assert len(key) == 21, key
+        self.cache.set(key, block)
         return key
 
     def walkblocks(self, key):
@@ -488,7 +501,8 @@ class Directory:
             with fp:
                 if self.encryption_key:
                     fp.set_encryption(self.encryption_key)
-                record = CasDir.from_bytes(fp.read())
+                data = fp.read()
+                record = CasDir.from_bytes(data)
                 rev = fp.rev
                 my_block = fp._file_info.history_key
                 my_data_block = fp._file_info.root
@@ -591,7 +605,7 @@ class Directory:
         path = self._get_fname(path)
         hist = self.man.save_file_data(path, meta, buf, cipher=cipher, subdir=True)
         self.record.files[hist.path] = hist.to_bytes()
-        # print('SAVED', fname, hist.rev)
+        # print('SAVED', self, path, len(self.record.files))
         # to propagate comments up the tree, save them in the file's metadata
         info = {}
         for key in ('op', 't', 'comment'):
@@ -654,17 +668,19 @@ class Directory:
                         break
 
     def open(self, filename, mode=Perm.read, owner=Owner.ALL, rev=None):
-        if filename.startswith('/'):
+        if filename.startswith(('/', './')):
             filename = self._get_fname(filename)
         elif filename.count('/') > 0 and not filename.endswith('/'):
             # need to open a directory to this path
-            path, filename = os.path.split(filename)
+            path, filename = os.path.split(os.path.normpath(filename))
             if not filename:
                 # means we're trying to open a subdirectory somewhere
                 path, filename = path.rsplit('/', 1)
                 filename += '/'
-            return self.chdir(path).open(filename, mode=mode, owner=owner, rev=rev)
-        return VersionedFile(self, os.path.join(self.current_dir, filename), mode=mode, rev=rev, requestor=owner)
+            return self.chdir(path, auto_save=self.auto_save).open(filename, mode=mode, owner=owner, rev=rev)
+        path = os.path.normpath(os.path.join(self.current_dir, filename))
+        # print('opening', self, path)
+        return VersionedFile(self, path, mode=mode, rev=rev, requestor=owner)
 
     def chdir(self, dirname, rev=None, encryption_key=None, auto_save=None):
         auto_save = auto_save if auto_save is not None else self.auto_save
@@ -672,6 +688,8 @@ class Directory:
             dirname += '/'
         if dirname.startswith('/'):
             dirname = dirname[1:]
+        elif dirname.startswith('./'):
+            dirname = dirname[2:]
         if dirname.count('/') > 1:
             # need to open/create subdirectories
             d = None
