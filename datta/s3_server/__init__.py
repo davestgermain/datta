@@ -99,7 +99,7 @@ def main():
     loop = asyncio.get_event_loop()
 
     if args.block_server:
-        from datta.block_server import AsyncioBlockServer
+        from datta.fs.cas.server import AsyncioBlockServer
         host, port = args.block_server.split(':')
         bs = AsyncioBlockServer(args.dsn, host=host, port=port, debug=args.debug)
         block_server = bs.start(loop=loop, run_loop=False)
