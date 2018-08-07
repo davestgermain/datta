@@ -42,17 +42,29 @@ CasDir = make_record_class('CasDir', [
 
 @classmethod
 def dir_from_key(cls, key, fs):
-    block = fs.readblock(key)
-    info = CasHistoryInfo.from_bytes(block)
-    obj = cls.from_bytes(b''.join(fs.walkblocks(info.root)))
-    return obj
+    if key:
+        block = fs.readblock(key)
+        info = CasHistoryInfo.from_bytes(block)
+        obj = cls.from_bytes(b''.join(fs.walkblocks(info.root)))
+        return obj
 CasDir.from_key = dir_from_key
+
+@classmethod
+def dir_from_root(cls, root_key, fs):
+    return cls.from_bytes(b''.join(fs.walkblocks(root_key)))
+CasDir.from_root = dir_from_root
+
+def get_file(self, filename):
+    return CasHistoryInfo.from_bytes(self.files[filename])
+CasDir.get_file = get_file
+
 
 CAS_COMPRESSED = 1
 CAS_UNCOMPRESSED = 0
 CAS_KEY_SIZE = 21
 CAS_POINTER_SIZE = 21504
 CAS_BLOCKSIZE = 65536
+CAS_EMPTY_BLOCK = b'\x00\xcf\x83\xe15~\xef\xb8\xbd\xf1T(P\xd6m\x80\x07\xd6 \xe4\x05'
 
 
 class BaseCASManager(abc.ABC):
@@ -64,6 +76,12 @@ class BaseCASManager(abc.ABC):
     def writeblock(self, level, block, **kwargs):
         pass
 
+    def _hash_block(self, block):
+        return hashlib.sha512(block).digest()[:20]
+
+    def _blockkey(self, key):
+        return key
+
     def walkblocks(self, start_key, verify=False, return_keys=False, **kwargs):
         """
         Walk the block tree, starting from a pointer or data block
@@ -74,6 +92,8 @@ class BaseCASManager(abc.ABC):
         while keys:
             key = keys.pop(0)
             block = self.readblock(key, verify=verify, **kwargs)
+            if block is None:
+                break
             depth = key[0]
             if depth:
                 # this is a pointer block
@@ -124,9 +144,11 @@ class BaseCASManager(abc.ABC):
             meta['bs'] = old_info.bs
             meta['ps'] = old_info.ps
             meta['prev'] = old_info.get('root')
-            meta['rev'] = old_info.get('rev', -1) + 1
+            if meta.get('rev') is None:
+                meta['rev'] = old_info.get('rev', -1) + 1
         else:
-            meta['rev'] = 0
+            if meta.get('rev') is None:
+                meta['rev'] = 0
         meta['path'] = path
         if meta['modified']:
             meta['created'] = meta['modified']
@@ -196,24 +218,22 @@ class BaseCASManager(abc.ABC):
         block = readblock(bytes(file_info.root), **kwargs)
         if depth == 0:
             # there's only one block
-            return block
-        ptr_per_block = int(file_info.ps / keysize)
-        ptr_num, offset = divmod(chunk, ptr_per_block)
-        while depth > 1:
-            depth -= 1
-            boffset = (depth * ptr_num) * keysize
-            key = bytes(block[boffset:boffset + keysize])
-            block = readblock(key, **kwargs)
-        offset *= keysize
-        key = bytes(block[offset:offset + keysize])
-        data = readblock(key, **kwargs)
+            data = block
+        else:
+            ptr_per_block = int(file_info.ps / keysize)
+            ptr_num, offset = divmod(chunk, ptr_per_block)
+            while depth > 1:
+                depth -= 1
+                boffset = (depth * ptr_num) * keysize
+                key = bytes(block[boffset:boffset + keysize])
+                block = readblock(key, **kwargs)
+            offset *= keysize
+            key = bytes(block[offset:offset + keysize])
+            data = readblock(key, **kwargs)
 
         if cipher:
             data = cipher['decrypt'](data)
         return data
-
-    def _blockkey(self, key):
-        return key
 
 
 class KVCASManager(BaseCASManager):
@@ -230,7 +250,7 @@ class KVCASManager(BaseCASManager):
         Write a block to the Content Addressed Storage area of the keyspace
         """
         # sha512 is faster than sha256, but we don't need so many bits
-        csum = hashlib.sha512(block).digest()[:20]
+        csum = self._hash_block(block)
         hkey = struct.pack('>B20s', level, csum)
         key = self._basekey[hkey]
         self.cache.set(hkey, block)
@@ -265,7 +285,7 @@ class KVCASManager(BaseCASManager):
                         block = snappy.decompress(bytes(block))
                     if verify:
                         level, csum = struct.unpack('>B20s', key)
-                        calc = hashlib.sha512(block).digest()[:20]
+                        calc = self._hash_block(block)
                         if calc != csum:
                             mess = 'Hash mismatch %s != %s' % (calc, csum)
                             raise IOError(mess)
@@ -298,172 +318,6 @@ class KVCASManager(BaseCASManager):
                     yield key
 
 
-class SyncRemoteManager(BaseCASManager):
-    def __init__(self, addr=('127.0.0.1', 10811), save_file=None):
-        BaseCASManager.__init__(self)
-        self.addr = addr
-        self.save_file = save_file or '%s_%s.vac' % self.addr
-        self.sock = None
-        self.rfile = self.wfile = None
-        self._record = None
-        self._changed = False
-        self.cache = Cache(maxsize=256)
-
-    def load(self, return_file=False):
-        try:
-            fp = open(self.save_file, 'rb')
-            if return_file:
-                return fp
-            with fp:
-                return CasDir.from_bytes(fp.read())
-        except FileNotFoundError:
-            if return_file:
-                return None
-            return CasDir.from_dict({})
-
-    def save(self):
-        if self._changed:
-            rec = self.record
-            parent = self.load(return_file=True)
-            if parent:
-                rec.parent, level = self.writefile(parent, blocksize=4096)
-                parent.close()
-                # print('SAVED', rec.parent.hex())
-            val = rec.to_bytes()
-            with open(self.save_file, 'wb') as fp:
-                fp.write(rec.to_bytes())
-            self._changed = False
-
-    @property
-    def record(self):
-        if self._record is None:
-            self._record = self.load()
-        return self._record
-
-    @record.setter
-    def record(self, rec):
-        self._record = rec
-
-    def save_file_data(self, path, meta, buf, cipher=None, subdir=False):
-        hist = BaseCASManager.save_file_data(self, path, meta, buf, cipher=cipher)
-        if not subdir:
-            self.record.files[hist.path] = hist.to_bytes()
-            self._changed = True
-        return hist
-
-    def open(self, filename, mode=Perm.read, owner=Owner.ALL, rev=None):
-        try:
-            hist = CasHistoryInfo.from_bytes(self.record.files[filename])
-        except KeyError:
-            if mode == Perm.read:
-                raise FileNotFoundError(filename)
-            else:
-                hist = CasHistoryInfo.from_dict({'path': filename})
-        hist.history_key = self.record.parent
-        return VersionedFile(self, filename, mode=mode, rev=rev, file_info=hist)
-
-    def connect(self, do_ssl=False):
-        import socket
-        self.sock = socket.create_connection(self.addr)
-        if do_ssl:
-            import ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            self.sock = ctx.wrap_socket(self.sock)
-        self.rfile = self.sock.makefile('rb')
-        self.wfile = self.sock.makefile('wb')
-        print('connected to %s:%s' % self.addr, self.rfile.readline().strip().decode('utf8'))
-
-    def readblock(self, key, verify=False):
-        block = self.cache.get(key)
-        if block is None:
-            message = b'R %s\n' % key
-            self._send(message)
-            resp =  self.rfile.read(4)
-            if resp != b'ERRR':
-                length = struct.unpack('>I', resp)[0]
-                block = self.rfile.read(length)
-                if verify:
-                    if hashlib.sha512(block).digest()[:20] != key[1:]:
-                        raise Exception('Bad block!')
-                self.cache.set(key, block)
-            else:
-                block = None
-        return block
-
-    def writeblock(self, level, block):
-        message = b'W %s\n' % struct.pack('>BI', level, len(block))
-        message += block
-        self._send(message)
-        length = struct.unpack('>I', self.rfile.read(4))[0]
-        key = self.rfile.read(length)
-        assert len(key) == 21, key
-        self.cache.set(key, block)
-        return key
-
-    def walkblocks(self, key):
-        message = b'T %s\n' % key
-        self._send(message)
-        while 1:
-            resp = self.rfile.read(4)
-            if resp == b'\x00\x00\x00\x00':
-                break
-            if resp != b'ERRR':
-                length = struct.unpack('>I', resp)[0]
-                block = self.rfile.read(length)
-                yield block
-            else:
-                yield None
-                break
-
-    def missing(self, keys):
-        missing = []
-        while keys:
-            to_check, keys = keys[:10000], keys[10000:]
-            message = b'H ' + b''.join(to_check)
-            self._send(message)
-            while 1:
-                resp = self.rfile.read(21)
-                if resp != b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00':
-                    missing.append(resp)
-                else:
-                    break
-        return missing
-
-    def get_stats(self):
-        import json
-        message = b'S\n'
-        self._send(message)
-        return json.loads(self.rfile.readline().decode('utf8'))
-
-    def _send(self, message):
-        if not self.sock:
-            self.connect()
-        lm = len(message)
-        mess = struct.pack('>I', lm) + message
-        self.wfile.write(mess)
-        self.wfile.flush()
-        
-    def close(self):
-        if self._record:
-            self.save()
-        self._send(b'Q\n')
-        self.wfile.close()
-        self.rfile.close()
-        self.sock.close()
-        self.sock = None
-
-    def __enter__(self):
-        if not self.sock:
-            self.connect()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-        if exc:
-            import six
-            six.reraise(exc_type, exc, tb)
 
 
 class Directory:
@@ -519,38 +373,59 @@ class Directory:
         self.my_info_block = my_block
         self.my_data_block = my_data_block
 
-    def save(self, extra_info=None):
-        val = self.record.to_bytes()
-        if val == self._recordbytes:
+    def save(self, meta=None, info=None):
+        if self.record.to_bytes() == self._recordbytes:
             return
         if self.parent:
             fp = self.parent.open(self.current_dir, mode=Perm.write)
         else:
             fp = self.man.open(self.root, mode=Perm.write, owner=self.root_owner)
         with fp:
+            if info:
+                for k, v in info.items():
+                    if v is not None:
+                        setattr(fp, k, v)
             if self.encryption_key:
                 fp.set_encryption(self.encryption_key)
             fp.content_type = u'application/x-cas-directory'
             self.record.parent = self.my_info_block
-            fp.write(val)
+            fp.write(self.record.to_bytes())
             if not self.parent:
                 # root file should be a CAS file
                 fp.meta[u'CAS'] = True
             # clear old meta info
-            for k in ('comment', 'op', 't'):
+            for k in (u'comment', u'op', u't'):
                 fp.meta.pop(k, None)
-            if extra_info:
-                fp.meta.update(extra_info)
+            if meta:
+                fp.meta.update(meta)
         self.load()
 
     def delete(self, path, owner=u'*', include_history=False, force_timestamp=None):
         path = self._get_fname(path)
-        try:
-            del self.record.files[path]
-        except KeyError:
+        hist = self.record.files.get(path)
+        if not hist:
             return False
+        try:
+            self.man.check_perm(os.path.join(self.current_dir, path), owner=owner, perm=Perm.delete)
+        except AttributeError as e:
+            pass
+        hist = CasHistoryInfo.from_bytes(hist)
+        hist.rev += 1
+        hist.length = 0
+        hist.owner = owner
+        if force_timestamp:
+            hist.created = force_timestamp
+        else:
+            hist.created = now()
+        meta = {'op': 'rm'}
+        hist.meta.update(meta)
+        hist.prev = hist.root
+        hist.root = CAS_EMPTY_BLOCK
+        hist.parent = self.my_info_block
+        self.record.files[path] = hist.to_bytes()
         if self.auto_save:
-            self.save({'op': 'rm', 't': os.path.join(self.root, path)})
+            meta[u't'] = os.path.join(self.current_dir, path)
+            self.save(meta=meta, info={'modified': force_timestamp, 'owner': owner})
 
     def rename(self, frompath, topath, owner=Owner.ALL, record_move=True):
         assert topath.startswith(self.root)
@@ -569,7 +444,7 @@ class Directory:
         hist.path = filename
         d.record.files[filename] = hist.to_bytes()
         if d.auto_save:
-            d.save({'op': 'mv', 't': [frompath, topath]})
+            d.save(meta={'op': 'mv', 't': [frompath, topath]}, info={'owner': owner})
 
     def listdir(self, walk=False, owner=None, limit=0, open_files=False):
         count = 0
@@ -593,6 +468,10 @@ class Directory:
                     if limit and limit == count:
                         break
 
+    def __contains__(self, path):
+        fname = self._get_fname(path)
+        return fname in self.record.files and self.record.get_file(fname).meta.get(u'op') != u'rm'
+
     def _get_fname(self, path):
         if path.endswith('/'):
             fname = path.split('/')[-2] + '/'
@@ -602,31 +481,36 @@ class Directory:
 
     def save_file_data(self, path, meta, buf, cipher=None):
         meta['parent'] = self.my_info_block
+        if meta.get('rev') is not None:
+            # this means the file is forced at this revision.
+            # we should save the fixed timestamp
+            info = {'modified': meta.get('modified')}
+        else:
+            info = None
         path = self._get_fname(path)
         hist = self.man.save_file_data(path, meta, buf, cipher=cipher, subdir=True)
         self.record.files[hist.path] = hist.to_bytes()
         # print('SAVED', self, path, len(self.record.files))
         # to propagate comments up the tree, save them in the file's metadata
-        info = {}
-        for key in ('op', 't', 'comment'):
-            if hist.meta.get(key):
-                info[key] = hist.meta[key]
-        if self.auto_save or hist.content_type == 'application/x-cas-directory':
-            self.save(info)
+        if self.auto_save or hist.content_type == u'application/x-cas-directory':
+            meta = {u't': os.path.join(self.current_dir, path)}
+            for key in (u'op', u't', u'comment'):
+                if hist.meta.get(key):
+                    meta[key] = hist.meta[key]
+            self.save(meta=meta, info=info)
 
     def get_file_metadata(self, path, rev):
         fname = self._get_fname(path)
-        hist = self.record.files.get(fname)
-        if not hist:
+        try:
+            hist = self.record.get_file(fname)
+        except KeyError:
             return {}
-        hist = CasHistoryInfo.from_bytes(hist)
-        if rev is not None and rev != hist.rev:
+        if rev is not None and rev < hist.rev:
             startkey = self.my_info_block
-            while hist.rev != rev and startkey:
+            while hist.rev > rev and startkey:
                 try:
-                    record = CasDir.from_key(startkey, self.man)
-                    hist = CasHistoryInfo.from_bytes(record.files[fname])
-                    startkey = record.parent
+                    hist = CasDir.from_key(startkey, self.man).get_file(fname)
+                    startkey = hist.parent
                 except KeyError:
                     return {}
         hist.history_key = self.my_info_block
@@ -649,7 +533,15 @@ class Directory:
             while start:
                 block = self.man.readblock(start)
                 info = CasHistoryInfo.from_bytes(block)
-                yield info
+                changed_path = info.meta.get('t', '').replace(self.current_dir + '/', '', 1)
+                if changed_path:
+                    try:
+                        finfo = CasDir.from_root(info.root, self.man).get_file(changed_path)
+                    except KeyError:
+                        finfo = None
+                else:
+                    finfo = None
+                yield info, finfo
                 start = info.parent
         else:
             fname = self._get_fname(path)
@@ -657,15 +549,26 @@ class Directory:
             if hist:
                 hist = CasHistoryInfo.from_bytes(hist)
                 yield hist
-            if self.record.parent:
-                start = self.record.parent
-                while hist.rev > -1:
+            if hist.parent:
+                start = hist.parent
+                while hist.rev > 0:
                     try:
-                        record = CasDir.from_key(start, self.man)
-                        yield CasHistoryInfo.from_bytes(record.files[fname])
-                        start = record.parent
+                        hist = CasDir.from_key(start, self.man).get_file(fname)
+                        start = hist.parent
+                        yield hist
                     except KeyError:
                         break
+
+    def changed_since(self, rev=0):
+        seen = set()
+        for info, finfo in self.get_meta_history(None):
+            if info.rev > rev:
+                path = finfo.path
+                if path not in seen:
+                    yield path
+                    seen.add(path)
+            else:
+                break
 
     def open(self, filename, mode=Perm.read, owner=Owner.ALL, rev=None):
         if filename.startswith(('/', './')):
@@ -679,7 +582,6 @@ class Directory:
                 filename += '/'
             return self.chdir(path, auto_save=self.auto_save).open(filename, mode=mode, owner=owner, rev=rev)
         path = os.path.normpath(os.path.join(self.current_dir, filename))
-        # print('opening', self, path)
         return VersionedFile(self, path, mode=mode, rev=rev, requestor=owner)
 
     def chdir(self, dirname, rev=None, encryption_key=None, auto_save=None):

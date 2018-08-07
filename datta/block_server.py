@@ -6,6 +6,9 @@ import json
 import sys
 import os.path
 from collections import defaultdict
+from nacl.public import PrivateKey, PublicKey, Box
+from nacl.hash import sha256, blake2b
+from nacl.encoding import RawEncoder
 from datta.fs import dbopen
 
 if 'PyPy' not in sys.version:
@@ -17,16 +20,16 @@ if 'PyPy' not in sys.version:
 
 
 
-class BaseBlockServer:
-    def __init__(self, dsn, port=10811, host='127.0.0.1', debug=False):
-        fs = dbopen(dsn).cas
+class BlockProtocol:
+    def __init__(self, cas, debug=False):
         for k in ('readblock', 'writeblock', 'walkblocks'):
-            setattr(self, k, getattr(fs, k))
-        self.port = port
-        self.host = host
+            setattr(self, k, getattr(cas, k))
         self.stats = defaultdict(int)
         self.stats['start'] = time.time()
         self.debug = debug
+        self.private_key = PrivateKey.generate()
+        self.public_key = bytes(self.private_key.public_key)
+        self.client_box = None
 
     def get_key(self, line):
         key = line[1:-1]
@@ -37,7 +40,21 @@ class BaseBlockServer:
         return key, is_hex
 
     def make_response(self, message):
+        if self.client_box:
+            message = self.client_box.encrypt(message)
         return struct.pack('>I', len(message)) + message
+
+    def handle_N(self, message):
+        """
+        encryption key negotiation
+        """
+        pub_key = PublicKey(message[:32])
+        auth = message[32:64]
+        self.client_box = Box(self.private_key, pub_key)
+        if self.debug:
+            print('server public_key: %s' % self.public_key.hex())
+            print('client public_key: %s' % bytes(pub_key).hex())
+        return [b'OK']
 
     def handle_Q(self, message):
         return [b'BYE\n', None]
@@ -110,29 +127,35 @@ class BaseBlockServer:
         self.stats['open-conn'] += 1
         if self.debug:
             print('CONNECT %s' % self.stats['open-conn'])
-        return b'CAS uptime: %ds\n' % (time.time() - self.stats['start'])
+        auth = blake2b((self.public_key + b'datta'), encoder=RawEncoder)
+        return self.public_key + auth
+
+    def close(self):
+        self.stats['open-conn'] -= 1
 
     async def get_response(self, message):
+        if self.client_box:
+            message = self.client_box.decrypt(message)
         command = chr(message[0])
         if command in ('', ' ', '\n'):
             return
         return getattr(self, 'handle_%s' % command)(message[1:])
 
-    def _get_ssl(self, cert_path=None):
-        if cert_path:
-            import ssl
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.set_ciphers('ECDHE+AESGCM')
-            ssl_context.load_cert_chain(os.path.join(cert_path, 'cert.pem'), keyfile=os.path.join(cert_path, 'key.pem'))
-            return ssl_context
+
+
+class BaseBlockServer:
+    def __init__(self, dsn, port=10811, host='127.0.0.1', debug=False):
+        self.cas = dbopen(dsn).cas
+        self.port = port
+        self.host = host
+        self.debug = debug
 
 
 class AsyncioBlockServer(BaseBlockServer):
-    def start(self, ssl_certs=None, loop=None, run_loop=True):
-        ssl_context = self._get_ssl(ssl_certs)
+    def start(self, loop=None, run_loop=True):
         self.sleep = asyncio.sleep
         loop = loop or asyncio.get_event_loop()
-        coro = asyncio.start_server(self.handle_client, self.host, self.port, loop=loop, ssl=ssl_context)
+        coro = asyncio.start_server(self.handle_client, self.host, self.port, loop=loop)
         if self.debug:
             print('Starting block server on %s:%s' % (self.host, self.port))
         server = loop.run_until_complete(coro)
@@ -148,7 +171,8 @@ class AsyncioBlockServer(BaseBlockServer):
             return server
 
     async def handle_client(self, reader, writer):
-        writer.write(self.welcome())
+        proto = BlockProtocol(self.cas, debug=self.debug)
+        writer.write(proto.welcome())
         unpack = struct.unpack
         running = True
         while running:
@@ -163,7 +187,7 @@ class AsyncioBlockServer(BaseBlockServer):
                 if message_size > 1048576:
                     raise IOError('too big %d' % message_size)
                 message = await reader.readexactly(message_size)
-                response = await self.get_response(message)
+                response = await proto.get_response(message)
                 if response is None:
                     continue
                 for chunk in response:
@@ -180,8 +204,7 @@ class AsyncioBlockServer(BaseBlockServer):
             else:
                 await writer.drain()
         writer.close()
-        # print('Closed')
-        self.stats['open-conn'] -= 1
+        proto.close()
 
     
 class TrioBlockServer(BaseBlockServer):
@@ -235,7 +258,16 @@ class TrioBlockServer(BaseBlockServer):
         self.stats['open-conn'] -= 1
 
 if __name__ == '__main__':
-    import sys, os
-    server = AsyncioBlockServer(sys.argv[1], host='', debug=os.getenv('DEBUG', '') == 'true')
+    import argparse
+    parser = argparse.ArgumentParser(prog='datta.block_server', description='start the CAS block server')
+    parser.add_argument('-d', default='lmdb:///tmp/bad', dest='dsn', help='DSN for file manager')
+    parser.add_argument('-t', default=False, dest='trio', help='Use Trio', action='store_true')
+    parser.add_argument('--debug', default=False, dest='debug', action='store_true')
+    parser.add_argument('address', default='127.0.0.1:10811')
+    args = parser.parse_args()
+    
+    host, port = args.address.split(':')
+    port = int(port)
+    server = AsyncioBlockServer(args.dsn, host=host, port=port, debug=args.debug)
     server.start()
 
