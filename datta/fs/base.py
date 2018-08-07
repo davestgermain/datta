@@ -629,25 +629,45 @@ class VersionedFile(io.BufferedIOBase):
         """
         Set the encryption password, optionally saving the password in the metadata
         """
-        import blowfish
-        password = hashlib.sha512(password.encode('utf8')).digest()[:56]
+        try:
+            from nacl.secret import SecretBox
+        except ImportError:
+            SecretBox = None
+        if SecretBox:
+            password = hashlib.sha256(password.encode('utf8')).digest()
+        else:
+            password = hashlib.sha512(password.encode('utf8')).digest()[:56]
         if self.writable():
             assert self._cipher is None
-            self.meta[u'_encryption'] = {
-                u'method': u'cfb',
-                u'iv': os.urandom(8),
-            }
+            if SecretBox:
+                method = u'nacl'
+                self.meta[u'_encryption'] = {u'method': method}
+            else:
+                method = u'cfb'
+                self.meta[u'_encryption'] = {
+                    u'method': method,
+                    u'iv': os.urandom(8),
+                }
             if save_password:
                 self.meta[u'_encryption'][u'key'] = password
         else:
             assert u'_encryption' in self.meta
+            method = self.meta[u'_encryption'][u'method']
             password = self.meta[u'_encryption'].get(u'key', None) or password
-        c = blowfish.Cipher(password)
-        iv = self.meta[u'_encryption'][u'iv']
-        self._cipher = {
-            'encrypt': lambda chunk: b''.join(c.encrypt_cfb(chunk, iv)),
-            'decrypt': lambda chunk: b''.join(c.decrypt_cfb(chunk, iv)),
-        }
+        if method == u'nacl':
+            c = SecretBox(password)
+            self._cipher = {
+                'encrypt': c.encrypt,
+                'decrypt': c.decrypt
+            }
+        else:
+            import blowfish
+            c = blowfish.Cipher(password)
+            iv = self.meta[u'_encryption'][u'iv']
+            self._cipher = {
+                'encrypt': lambda chunk: b''.join(c.encrypt_cfb(chunk, iv)),
+                'decrypt': lambda chunk: b''.join(c.decrypt_cfb(chunk, iv)),
+            }
         if self.data:
             self._curr_chunk = self._cipher['decrypt'](self.data)
 

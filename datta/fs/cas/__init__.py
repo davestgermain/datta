@@ -371,6 +371,8 @@ class Directory:
             with fp:
                 if self.encryption_key:
                     fp.set_encryption(self.encryption_key)
+                elif fp.meta.get(u'_encryption'):
+                    raise Exception('Directory is encrypted')
                 data = fp.read()
                 record = CasDir.from_bytes(data)
                 rev = fp.rev

@@ -2,6 +2,7 @@ from datta.fs.cas.client import SyncRemoteManager
 import os.path, os, glob
 import sys
 import argparse
+import traceback
 
 
 
@@ -13,7 +14,7 @@ def sync_one(from_fp, to_fp, encryption_key=None):
     to_fp.modified = st.st_mtime
     to_fp.do_hash()
     if encryption_key:
-        to_fp.set_encryption(password)
+        to_fp.set_encryption(encryption_key)
     while 1:
         chunk = from_fp.read(65536)
         if not chunk:
