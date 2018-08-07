@@ -7,7 +7,6 @@ import struct
 import hashlib
 import os.path
 import traceback
-from functools import lru_cache
 from datta.pack import make_record_class
 from datta.cache import Cache
 from datta.fs.base import Perm, Owner, VersionedFile
@@ -15,6 +14,14 @@ try:
     import snappy
 except ImportError:
     snappy = None
+
+
+CAS_COMPRESSED = 1
+CAS_UNCOMPRESSED = 0
+CAS_KEY_SIZE = 21
+CAS_POINTER_SIZE = 21504
+CAS_BLOCKSIZE = 65536
+CAS_EMPTY_BLOCK = b'\x00\xcf\x83\xe15~\xef\xb8\xbd\xf1T(P\xd6m\x80\x07\xd6 \xe4\x05'
 
 
 now = datetime.datetime.utcnow
@@ -59,12 +66,18 @@ def get_file(self, filename):
 CasDir.get_file = get_file
 
 
-CAS_COMPRESSED = 1
-CAS_UNCOMPRESSED = 0
-CAS_KEY_SIZE = 21
-CAS_POINTER_SIZE = 21504
-CAS_BLOCKSIZE = 65536
-CAS_EMPTY_BLOCK = b'\x00\xcf\x83\xe15~\xef\xb8\xbd\xf1T(P\xd6m\x80\x07\xd6 \xe4\x05'
+def get_cas_secret(*args):
+    """
+    return the shared secret for client and server authorization
+    can be any byte string
+    """
+    secret = b'datta'
+    for a in args:
+        if a:
+            if not isinstance(a, bytes):
+                a = a.encode('utf8')
+            secret += a
+    return secret
 
 
 class BaseCASManager(abc.ABC):
@@ -244,6 +257,9 @@ class KVCASManager(BaseCASManager):
         self.open = kv.open
         self.close = kv.close
         self.cache = Cache(maxsize=256)
+
+    def __repr__(self):
+        return 'KVCASManager(%r)' % self.kv
 
     def writeblock(self, level, block, tr=None, **kwargs):
         """

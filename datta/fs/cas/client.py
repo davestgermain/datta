@@ -1,5 +1,7 @@
-from . import BaseCASManager, CasDir
+from . import BaseCASManager, CasDir, CasHistoryInfo, VersionedFile, get_cas_secret, Perm, Owner
+from datta.cache import Cache
 import socket
+import struct
 import six
 
 try:
@@ -80,12 +82,12 @@ class SyncRemoteManager(BaseCASManager):
     def _negotiate_encryption(self, server_pub_key, server_auth=None):
         six.print_('server public_key: %s' % server_pub_key.hex())
         self.server_box = None
-        if blake2b(server_pub_key + b'datta', encoder=RawEncoder) != server_auth:
+        if blake2b(server_pub_key + get_cas_secret('%s:%d' % self.sock.getsockname()), encoder=RawEncoder) != server_auth:
             raise RuntimeError('Bad Server Auth! %s' % server_auth)
         self.private_key = PrivateKey.generate()
         my_pub_key = bytes(self.private_key.public_key)
         six.print_('client public_key: %s' % my_pub_key.hex())
-        auth = blake2b(my_pub_key + b'datta', encoder=RawEncoder)
+        auth = blake2b(my_pub_key + get_cas_secret('%s:%d' % self.sock.getpeername()), encoder=RawEncoder)
         self._send(b'N' + my_pub_key + auth)
         resp  = self.rfile.read(2)
         if resp == b'OK':

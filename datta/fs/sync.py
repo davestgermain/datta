@@ -1,4 +1,4 @@
-from datta.fs.cas import SyncRemoteManager
+from datta.fs.cas.client import SyncRemoteManager
 import os.path, os, glob
 import sys
 import argparse
