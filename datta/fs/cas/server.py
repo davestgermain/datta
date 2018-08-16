@@ -52,7 +52,7 @@ class BlockProtocol:
         """
         pub_key = PublicKey(message[:32])
         auth = message[32:64]
-        if blake2b(bytes(pub_key) + get_cas_secret(self.my_addr), encoder=RawEncoder) != auth:
+        if blake2b(bytes(pub_key) + get_cas_secret(), encoder=RawEncoder) != auth:
             raise RuntimeError('Bad Client Auth! %s' % auth)
         self.client_box = Box(self.private_key, pub_key)
         if self.debug:
@@ -139,7 +139,7 @@ class BlockProtocol:
         self.stats['open-conn'] += 1
         if self.debug:
             print('CONNECT %s %s' % (self.stats['open-conn'], remote_addr))
-        auth = blake2b((self.public_key + get_cas_secret(remote_addr)), encoder=RawEncoder)
+        auth = blake2b((self.public_key + get_cas_secret()), encoder=RawEncoder)
         return self.public_key + auth
 
     def close(self):

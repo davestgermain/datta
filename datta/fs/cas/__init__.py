@@ -3,6 +3,7 @@ functions and classes for Content Addressable Storage
 """
 import abc
 import datetime
+import time
 import struct
 import hashlib
 import os.path
@@ -71,7 +72,7 @@ def get_cas_secret(*args):
     return the shared secret for client and server authorization
     can be any byte string
     """
-    secret = b'datta'
+    secret = b'datta' + int(time.time() / 1200).to_bytes(3, 'little')
     for a in args:
         if a:
             if not isinstance(a, bytes):
@@ -470,7 +471,7 @@ class Directory:
             if open_files:
                 fp = self.open(name, owner=owner)
                 yield fp
-                last_info = fp.info
+                last_info = fp._file_info
             else:
                 last_info = CasHistoryInfo.from_bytes(h)
                 yield last_info
