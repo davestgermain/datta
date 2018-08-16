@@ -193,7 +193,7 @@ class AsyncioBlockServer(BaseBlockServer):
                 loop.run_until_complete(unix_server.wait_closed())
             loop.close()
         else:
-            return server
+            return socket_server
 
     async def handle_client(self, reader, writer):
         # my_addr = '%s:%d' % writer.get_extra_info('socket').getsockname()
