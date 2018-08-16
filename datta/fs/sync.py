@@ -65,7 +65,10 @@ def main():
 
     args = parser.parse_args()
 
-    client = SyncRemoteManager(addr=tuple(args.addr.split(':')), save_file=args.save_file)
+    addr = args.addr
+    if not addr.startswith('/'):
+        addr = tuple(addr.split(':'))
+    client = SyncRemoteManager(addr=addr, save_file=args.save_file)
     with client:
         if args.list_file:
             d = client.opendir(args.remote_path)

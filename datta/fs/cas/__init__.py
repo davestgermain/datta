@@ -457,7 +457,12 @@ class Directory:
         hist = CasHistoryInfo.from_bytes(hist)
         
         if path:
-            d = self.chdir(path)
+            d = self
+            while 1:
+                if d.parent is None:
+                    break
+                d = d.parent
+            d = d.chdir(path)
         else:
             d = self
         hist.path = filename

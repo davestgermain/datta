@@ -156,10 +156,11 @@ class BlockProtocol:
 
 
 class BaseBlockServer:
-    def __init__(self, dsn, port=10811, host='127.0.0.1', debug=False):
+    def __init__(self, dsn, port=10811, host='127.0.0.1', debug=False, unix_socket=None):
         self.cas = dbopen(dsn).cas
         self.port = port
         self.host = host
+        self.unix_socket = unix_socket
         self.debug = debug
         self.stats = defaultdict(int)
         self.stats['start'] = time.time()
@@ -169,25 +170,35 @@ class BaseBlockServer:
 class AsyncioBlockServer(BaseBlockServer):
     def start(self, loop=None, run_loop=True):
         loop = loop or asyncio.get_event_loop()
-        coro = asyncio.start_server(self.handle_client, self.host, self.port, loop=loop)
         if self.debug:
             print('Starting block server (%r) on %s:%s' % (self.cas, self.host, self.port))
-        server = loop.run_until_complete(coro)
+        socket_coro = asyncio.start_server(self.handle_client, self.host, self.port, loop=loop)
+        socket_server = loop.run_until_complete(socket_coro)
+        if self.unix_socket:
+            if self.debug:
+                print('Starting block server (%r) on %s' % (self.cas, self.unix_socket))
+            unix_coro = asyncio.start_unix_server(self.handle_client, path=self.unix_socket, loop=loop)
+            unix_server = loop.run_until_complete(unix_coro)
+        else:
+            unix_server = None
         if run_loop:
             try:
                 loop.run_forever()
             except KeyboardInterrupt:
                 pass
-            server.close()
-            loop.run_until_complete(server.wait_closed())
+            socket_server.close()
+            loop.run_until_complete(socket_server.wait_closed())
+            if unix_server:
+                unix_server.close()
+                loop.run_until_complete(unix_server.wait_closed())
             loop.close()
         else:
             return server
 
     async def handle_client(self, reader, writer):
-        my_addr = '%s:%d' % writer.get_extra_info('socket').getsockname()
-        remote_addr = '%s:%d' % writer.get_extra_info('peername')
-        proto = BlockProtocol(self.cas, self.stats, my_addr=my_addr.encode('utf8'), private_key=self.private_key, debug=self.debug)
+        # my_addr = '%s:%d' % writer.get_extra_info('socket').getsockname()
+        remote_addr = str(writer.get_extra_info('peername'))
+        proto = BlockProtocol(self.cas, self.stats, private_key=self.private_key, debug=self.debug)
         writer.write(proto.welcome(remote_addr.encode('utf8')))
         unpack = struct.unpack
         running = True
@@ -230,67 +241,84 @@ class AsyncioBlockServer(BaseBlockServer):
         proto.close()
 
     
-# class TrioBlockServer(BaseBlockServer):
-#     def start(self, ssl_certs=None):
-#         ssl_context = self._get_ssl(ssl_certs)
-#         import trio
-#         self.sleep = trio.sleep
-#         trio.run(trio.serve_tcp, self.handle_client, self.port)
-#         self.fs.close()
-#
-#     async def handle_client(self, stream):
-#         try:
-#             await stream.send_all(self.welcome())
-#             buf = bytearray()
-#             unpack = struct.unpack
-#             to_recv = 4
-#             message_size = 0
-#             running = True
-#             while running:
-#                 buf += await stream.receive_some(to_recv)
-#                 if not buf:
-#                     break
-#                 elif len(buf) < to_recv:
-#                     continue
-#                 if not message_size:
-#                     message_size = unpack('>I', buf)[0]
-#                     buf = bytearray()
-#                     if message_size > 1048576:
-#                         raise IOError('too big %d' % message_size)
-#                 buf += await stream.receive_some(message_size)
-#                 if len(buf) == message_size:
-#                     response = await self.get_response(buf)
-#                     if response is None:
-#                         continue
-#                     for chunk in response:
-#                         if chunk is not None:
-#                             await stream.send_all(chunk)
-#                         else:
-#                             running = False
-#                             break
-#                     to_recv = 4
-#                     message_size = 0
-#                     buf = bytearray()
-#                 else:
-#                     to_recv = message_size - len(buf)
-#         except Exception as e:
-#             traceback.print_exc()
-#             await self.sleep(5)
-#         await stream.aclose()
-#         # print('Closed')
-#         self.stats['open-conn'] -= 1
+class TrioBlockServer(BaseBlockServer):
+    def start(self):
+        import trio
+        self.sleep = trio.sleep
+        trio.run(self._run_servers)
+        self.cas.close()
+
+    async def _run_servers(self):
+        import trio
+        
+        print('hello')
+        listeners = await trio.open_tcp_listeners(self.port)
+
+
+        if self.unix_socket:
+            from trio.socket import socket, SOCK_STREAM, AF_UNIX, SOL_SOCKET, SO_REUSEADDR
+            
+            sock = socket(AF_UNIX, SOCK_STREAM)
+            sock.setsockopt(
+                SOL_SOCKET, SO_REUSEADDR, 1
+            )
+            await sock.bind(self.unix_socket)
+            sock.listen(10)
+            listeners.append(trio.SocketListener(sock))
+
+        print(listeners)
+        await trio.serve_listeners(self.handle_client, listeners)
+
+    async def read_exactly(self, stream, length):
+        buf = bytearray()
+        while len(buf) < length:
+            buf += await stream.receive_some(min(length, length - len(buf)))
+        return bytes(buf)
+
+    async def handle_client(self, stream):
+        proto = BlockProtocol(self.cas, self.stats, private_key=self.private_key, debug=self.debug)
+        try:
+            await stream.send_all(proto.welcome(''))
+            unpack = struct.unpack
+            running = True
+            while running:
+                bl = await self.read_exactly(stream, 4)
+                message_size = unpack('>I', bl)[0]
+                if message_size > 1048576:
+                    raise IOError('too big %d' % message_size)
+                mess = await self.read_exactly(stream, message_size)
+                response = await proto.get_response(mess)
+                if response is None:
+                    continue
+                for chunk in response:
+                    if chunk is not None:
+                        await stream.send_all(chunk)
+                    else:
+                        running = False
+                        break
+        except Exception as e:
+            traceback.print_exc()
+            await self.sleep(5)
+        await stream.aclose()
+        proto.close()
+        # print('Closed')
+        self.stats['open-conn'] -= 1
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(prog='datta.block_server', description='start the CAS block server')
     parser.add_argument('-d', default='lmdb:///tmp/bad', dest='dsn', help='DSN for file manager')
-    # parser.add_argument('-t', default=False, dest='trio', help='Use Trio', action='store_true')
+    parser.add_argument('-t', default=False, dest='trio', help='Use Trio', action='store_true')
+    parser.add_argument('-u', default='/tmp/cas.sock', dest='unix_socket', help='Path for unix socket')
     parser.add_argument('--debug', default=False, dest='debug', action='store_true')
     parser.add_argument('address', default='127.0.0.1:10811')
     args = parser.parse_args()
     
     host, port = args.address.split(':')
     port = int(port)
-    server = AsyncioBlockServer(args.dsn, host=host, port=port, debug=args.debug)
+    if args.trio:
+        server = TrioBlockServer(args.dsn, host=host, port=port, debug=args.debug, unix_socket=args.unix_socket)
+    else:
+        server = AsyncioBlockServer(args.dsn, host=host, port=port, debug=args.debug, unix_socket=args.unix_socket)
     server.start()
 

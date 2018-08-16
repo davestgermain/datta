@@ -19,12 +19,18 @@ class SyncRemoteManager(BaseCASManager):
     def __init__(self, addr=('127.0.0.1', 10811), save_file=None):
         BaseCASManager.__init__(self)
         self.addr = addr
-        self.save_file = save_file or '%s_%s.vac' % self.addr
+        if not save_file:
+            if isinstance(addr, str):
+                save_file = addr.replace('/', '_') + '.vac'
+            else:
+                save_file = '%s_%s.vac' % self.addr
+        self.save_file = save_file
         self.sock = None
         self.rfile = self.wfile = None
         self._record = None
         self._changed = False
         self.server_box = None
+        self.use_encryption = ENCRYPTION
         self.cache = Cache(maxsize=256)
 
     def load(self, return_file=False):
@@ -96,12 +102,16 @@ class SyncRemoteManager(BaseCASManager):
             six.print_(resp)
         
     def connect(self):
-        self.sock = socket.create_connection(self.addr)
+        if isinstance(self.addr, str) and self.addr.startswith('/'):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(self.addr)
+        else:
+            self.sock = socket.create_connection(self.addr)
         self.rfile = self.sock.makefile('rb')
         self.wfile = self.sock.makefile('wb')
         line = self.rfile.read(64)
         six.print_('connected to %s:%s' % (self.addr, line.hex()))
-        if ENCRYPTION:
+        if self.use_encryption:
             public_key, auth = line[:32], line[32:]
             self._negotiate_encryption(public_key, auth)
 
