@@ -122,7 +122,8 @@ class SyncRemoteManager(BaseCASManager):
             return message
 
     def readblock(self, key, verify=False):
-        block = self.cache.get(key)
+        # block = self.cache.get(key)
+        block = None
         if block is None:
             message = b'R %s\n' % key
             self._send(message)

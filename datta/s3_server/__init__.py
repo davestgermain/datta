@@ -45,7 +45,8 @@ def main():
     import os.path
     import sys
     import asyncio
-    from hypercorn import config, run
+    from hypercorn import config
+    from hypercorn.asyncio import serve
     from quart.logging import create_serving_logger
 
     parser = argparse.ArgumentParser(prog='datta.s3_server', description='start the s3 compatible server')
@@ -117,7 +118,7 @@ def main():
         run.run_multiple(app, hc, workers=args.workers)
     else:
         try:
-            run.run_single(app, hc, loop=loop)
+            loop.run_until_complete(serve(app, hc))
         except KeyboardInterrupt:
             if block_server:
                 block_server.close()
