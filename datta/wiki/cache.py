@@ -118,7 +118,8 @@ def cache_response_middleware(resp):
 
         # exp = (math.sqrt(resp.content_length) * 7200)
         # just cache for 30 days
-        exp = 86400 * 30
+        # exp = 86400 * 30
+        exp = 1800
         exp += time.time()
         current_app.cache[cache_key] = (resp, exp)
     elif resp.status_code == 303:
