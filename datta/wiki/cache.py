@@ -83,7 +83,10 @@ def cache_request_middleware():
         if not request.query_string:
             do_cache = path
     elif method == 'POST' and path.startswith(('/+edit/', '/+undo/')):
-        request._purge_cache = make_key(request.url.replace('/+edit', '').replace('/+undo', ''))
+        url = request.url
+        for prefix in ('/+edit', '/+undo', '/%2Bedit', '%2Bundo'):
+            url = url.replace(prefix, '')
+        request._purge_cache = make_key(url)
     # elif path.startswith('/+cache/'):
     #     op = path.split('/')[2]
     #     info = getattr(self, 'cache_' + op)()

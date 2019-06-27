@@ -623,7 +623,8 @@ class VersionedFile(io.BufferedIOBase):
             for k, v in kwargs.items():
                 if k == 'modified' and self.mode == 'w':
                     continue
-                setattr(self, k, v)
+                if v is not None:
+                    setattr(self, k, v)
 
     def set_encryption(self, password='', save_password=False):
         """
