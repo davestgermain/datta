@@ -479,7 +479,7 @@ class VersionedFile(io.BufferedIOBase):
 
     @property
     def is_dir(self):
-        return self.content_type == u'application/x-directory'
+        return getattr(self, 'content_type', '') == u'application/x-directory'
 
     def do_hash(self, algo='sha256'):
         self.hash = algo
